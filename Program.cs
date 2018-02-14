@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Security;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
@@ -31,6 +31,7 @@ namespace pixels2points
             FindNoDataPixels findpix = new FindNoDataPixels();
             CreateConvexHullPolygons convexhull = new CreateConvexHullPolygons();
             GetSpatialReference getspatialref = new GetSpatialReference();
+            bool IsParallel = false;
 
             argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
@@ -54,6 +55,9 @@ namespace pixels2points
                         break;
                     case "-o":
                         outputfile = args[++x];
+                        break;
+                    case "-para":
+                        IsParallel = true;
                         break;
                 }
             }
@@ -86,14 +90,25 @@ namespace pixels2points
             Console.WriteLine(">Registering GDAL Drivers...");
             GdalConfiguration.ConfigureGdal();
 
-            Console.WriteLine(">Parsing tiffs for 1,1,1 pixels...    ");
+            Console.WriteLine(">Parsing tiffs for black pixels...    ");
             row = Console.CursorTop - 1;
             col = Console.CursorLeft + 35;
             var spinner = new Spinner(col, row);
             spinner.Start();
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
-            findpix.ParallelFindNoData(searchresults);
+            //let's see if it's worth the extra overhead
+            if (IsParallel == true)
+            {
+                findpix.ParallelFindNoData(searchresults);
+            }
+            else
+            {
+                foreach (var result in searchresults)
+                {
+                    findpix.FindNoDataXYCoords(result, false);
+                }
+            }
             //for (int i = 0; i < searchresults.Count; i++)
             //{
                 //Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
@@ -118,10 +133,21 @@ namespace pixels2points
                 }
                 Console.WriteLine("    [+] Successfully created file");
                 Console.WriteLine(">Writing results to {0}...", outputfile);
-                foreach (var result in ResultCoords.results)
+                if (IsParallel == true)
                 {
-                    byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                    csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                    foreach (var result in ResultCoords.concurrentresults)
+                    {
+                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
+                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                    }
+                }
+                else
+                {
+                    foreach (var result in ResultCoords.results)
+                    {
+                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
+                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                    }
                 }
                 Console.WriteLine("    [+] Done!");
                 // in case the file stream is still open
@@ -131,6 +157,7 @@ namespace pixels2points
                 }                
                 //help out the garbage collector
                 ResultCoords.results = null;
+                ResultCoords.concurrentresults = null;
                 GC.Collect();
                 return;
             }
@@ -147,14 +174,22 @@ namespace pixels2points
                     return;
                 }
                 Console.WriteLine("    [+] Got projection reference.");
-                List<string> coordslist = ResultCoords.results.ToList();
+                List<string> coordslist = ResultCoords.concurrentresults.ToList();
                 //help out the garbage collector
-                ResultCoords.results = null;
+                ResultCoords.concurrentresults = null;
                 GC.Collect();
                 Console.WriteLine(">Creating shapefile...");
-                convexhull.CreateShapeFile(spatialref, coordslist, outputfile);
+                if (IsParallel == true)
+                {
+                    convexhull.CreateShapeFile(spatialref, coordslist, outputfile);
+                }
+                else
+                {
+                    convexhull.CreateShapeFile(spatialref, ResultCoords.results, outputfile);
+                }
                 Console.WriteLine("    [+] Done!");
                 coordslist = null;
+                ResultCoords.results = null;
             }
         }
     }
@@ -338,8 +373,8 @@ namespace pixels2points
 
     static class ResultCoords
     {
-        //public static List<string> results = new List<string>();
-        public static ConcurrentBag<string> results = new ConcurrentBag<string>();
+        public static List<string> results = new List<string>();
+        public static ConcurrentBag<string> concurrentresults = new ConcurrentBag<string>();
     }
 
     public class GetSpatialReference
@@ -368,7 +403,7 @@ namespace pixels2points
                 Parallel.ForEach(searchresults, 
                                 (result) => 
                                 {
-                                    FindNoDataXYCoords(result);
+                                    FindNoDataXYCoords(result, true);
                                 });
             }
             catch (AggregateException e)
@@ -377,7 +412,7 @@ namespace pixels2points
             }
         }
 
-        private void FindNoDataXYCoords(string filepath)
+        public void FindNoDataXYCoords(string filepath, bool para)
         {
             List<int> resolutionId = new List<int>() { 9 };
 
@@ -407,12 +442,19 @@ namespace pixels2points
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
-                    if (buf[r] <= 20 && buf2[r] <= 20 && buf3[r] <= 20)
+                    if (buf[r] < 10 && buf2[r] < 10 && buf3[r] < 10)
                     {
                         x = startX + r * interval;  //current lon                             
                         string filename = Path.GetFileNameWithoutExtension(filepath);
                         string csvline = string.Format("{0},{1},{2}{3}", x, y, filename, Environment.NewLine);
-                        ResultCoords.results.Add(csvline);
+                        if (para == true)
+                        {
+                            ResultCoords.concurrentresults.Add(csvline);
+                        }
+                        else
+                        {
+                            ResultCoords.results.Add(csvline);
+                        }
                     }
                 }
             }
