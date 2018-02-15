@@ -25,17 +25,23 @@ namespace pixels2points
             string inputdirectory = string.Empty;
             string outputfile = string.Empty;
             string argshelp = string.Empty;
+            string maskshpfile = string.Empty;
             List<string> searchresults;
+            List<string> masktilenames;
+            List<string> maskresults;
             System.IO.FileStream csvfilestream;
             HandleFileInput fileops = new HandleFileInput();
             FindNoDataPixels findpix = new FindNoDataPixels();
-            CreateConvexHullPolygons convexhull = new CreateConvexHullPolygons();
+            CreateMultiPointShp convexhull = new CreateMultiPointShp();
             GetSpatialReference getspatialref = new GetSpatialReference();
+            GenerateMaskList maskinput = new GenerateMaskList();
             bool IsParallel = false;
 
             argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
             argshelp = String.Concat(argshelp, "-o\t\t\toutput file (csv format)\r\n");
+            argshelp = String.Concat(argshelp, "Optional Arguments:\r\n");
+            argshelp = String.Concat(argshelp, "-m\t\t\tmask shapefile to limit which tiffs are processed");
             if (args.Length < 4)
             {
                 Console.WriteLine(argshelp);
@@ -59,6 +65,9 @@ namespace pixels2points
                     case "-para":
                         IsParallel = true;
                         break;
+                    case "-m":
+                        maskshpfile = args[++x];
+                        break;
                 }
             }
             if (!String.IsNullOrEmpty(outputfile))
@@ -74,6 +83,25 @@ namespace pixels2points
                     return;
                 }
             }
+            if (!String.IsNullOrEmpty(maskshpfile))
+            {
+                if (!(Path.GetExtension(outputfile) == ".shp"))
+                {
+                    Console.WriteLine("    [-] Argument must be a .shp file.");
+                    return;
+                }
+                if (File.Exists(outputfile))
+                {
+                    Console.WriteLine("    [-] {0} already exists.", outputfile);
+                    return;
+                }
+            }
+
+            Console.WriteLine(">Registering GDAL Drivers...");
+            GdalConfiguration.ConfigureGdal();
+            Console.WriteLine(">Registering OGR Drivers...");
+            GdalConfiguration.ConfigureOgr();
+
 
             Console.WriteLine(">Searching directory for tiffs...        ");
             searchresults = fileops.GetTifFilePathsFromDirectory(inputdirectory);
@@ -86,9 +114,28 @@ namespace pixels2points
             {
                 Console.WriteLine("    [+] {0} Files found.", searchresults.Count);
             }
-
-            Console.WriteLine(">Registering GDAL Drivers...");
-            GdalConfiguration.ConfigureGdal();
+            if (!String.IsNullOrEmpty(maskshpfile))
+            {
+                Console.WriteLine(">Finding files matching shapefile features...");
+                maskresults = new List<string>();
+                masktilenames = maskinput.GetTileNameFromShapefile(maskshpfile);
+                foreach (var filename in searchresults)
+                {
+                    foreach (var tilename in masktilenames)
+                    {
+                        if (tilename.Trim() == Path.GetFileNameWithoutExtension(filename))
+                        {
+                            maskresults.Add(filename);
+                        }
+                    }
+                }
+                searchresults = maskresults;
+                if (!searchresults.Any())
+                {
+                    Console.WriteLine("    [-] Could not find any matches. Exiting.");
+                    return;
+                }
+            }
 
             Console.WriteLine(">Parsing tiffs for black pixels...    ");
             row = Console.CursorTop - 1;
@@ -164,8 +211,6 @@ namespace pixels2points
 
             if (Path.GetExtension(outputfile) == ".shp" )
             {
-                Console.WriteLine(">Registering OGR Drivers...");
-                GdalConfiguration.ConfigureOgr();
                 Console.WriteLine(">Retrieving Projection Reference...");
                 string spatialref = getspatialref.GetSpatialReferenceFromPath(searchresults.First());
                 if (spatialref == null)
@@ -429,8 +474,13 @@ namespace pixels2points
             double interval = gt[1];    //Cell size
             double x, y;    //Current lon and lat
 
+            string filename = Path.GetFileNameWithoutExtension(filepath);
+            int adjacencycount = 0;
+            int adjacencythreshold = 20;
+
             for (int k = 0; k < Rows; k++)  //read one line
             {
+                adjacencycount = 0;
                 y = startY - k * interval;  //current lat
                 int[] buf = new int[Cols];
                 int[] buf2 = new int[Cols];
@@ -440,21 +490,52 @@ namespace pixels2points
                 greenband.ReadRaster(0, k, Cols, 1, buf2, Cols, 1, 0, 0);
                 blueband.ReadRaster(0, k, Cols, 1, buf3, Cols, 1, 0, 0);
                 //iterate each item in one line
+                List<List<double>> results = new List<List<double>>();
                 for (int r = 0; r < Cols; r++)
                 {
-                    if (buf[r] < 10 && buf2[r] < 10 && buf3[r] < 10)
+                    if (buf[r] < 20 && buf2[r] < 20 && buf3[r] < 20)
                     {
                         x = startX + r * interval;  //current lon                             
-                        string filename = Path.GetFileNameWithoutExtension(filepath);
-                        string csvline = string.Format("{0},{1},{2}{3}", x, y, filename, Environment.NewLine);
-                        if (para == true)
+                        if (buf[r + 1] < 20 && buf2[r + 1] < 20 && buf3[r + 1] < 20)
                         {
-                            ResultCoords.concurrentresults.Add(csvline);
+                            //only add pixels if they're clustered together
+                            //this way, you avoid all the errant little shadows that aren't actual data voids
+                            //needs reworking
+                            List<double> potentialresult = new List<double>();
+                            potentialresult.Add(x);
+                            potentialresult.Add(y);
+                            results.Add(potentialresult);
+                            ++adjacencycount;
                         }
                         else
                         {
-                            ResultCoords.results.Add(csvline);
+                            adjacencycount = 0;
                         }
+                    }
+                    else
+                    {
+                        adjacencycount = 0;
+                    }
+                    if (adjacencycount == adjacencythreshold)
+                    {
+                        for (int i = 0; i < adjacencythreshold; i++)
+                        {
+                            int ndex = results.Count() - 1;
+                            List<double> actualresult = results[ndex];
+                            results.Remove(results[ndex]);
+                            double thisx = actualresult[0];
+                            double thisy = actualresult[1];
+                            string csvline = string.Format("{0},{1},{2}{3}", thisx, thisy, filename, Environment.NewLine);
+                            if (para == true)
+                            {
+                                ResultCoords.concurrentresults.Add(csvline);
+                            }
+                            else
+                            {
+                                ResultCoords.results.Add(csvline);
+                            }
+                        }
+                        adjacencycount = 0;
                     }
                 }
             }
@@ -462,7 +543,7 @@ namespace pixels2points
         }
     }
 
-    public class CreateConvexHullPolygons
+    public class CreateMultiPointShp
     {
         private IEnumerable<List<string>> ReturnClusterCoords(List<string> querylist)
         {
@@ -511,9 +592,9 @@ namespace pixels2points
                 foreach (var point in cluster)
                 {
                     //wuhhh
-                    Tuple<double, double> pointxy = new Tuple<double, double>(Convert.ToDouble(point.Split(',')[0]), Convert.ToDouble(point.Split(',')[1]));
-                    double x = pointxy.Item1;
-                    double y = pointxy.Item2;
+                    //Tuple<double, double> pointxy = new Tuple<double, double>(Convert.ToDouble(point.Split(',')[0]), Convert.ToDouble(point.Split(',')[1]));
+                    double x = Convert.ToDouble(point.Split(',')[0]);
+                    double y = Convert.ToDouble(point.Split(',')[1]);
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
@@ -527,6 +608,51 @@ namespace pixels2points
                 }
                 newfeature.Dispose();
             }
+        }
+    }
+
+    public class GenerateMaskList
+    {
+        public List<string> GetTileNameFromShapefile(string shpfilepath)
+        {
+            string fieldname = "TileName";
+            bool gotit = false;
+            List<string> tilenames = new List<string>();
+
+            DataSource ds1 = Ogr.Open(shpfilepath, 0);
+            if (ds1 == null)
+            {
+                Console.WriteLine("Can't open {0}", shpfilepath);
+                System.Environment.Exit(-1);
+            }
+            Layer newlayer = ds1.GetLayerByIndex(0);
+            if (newlayer == null)
+            {
+                Console.WriteLine("FAILURE: Couldn't fetch layer");
+                System.Environment.Exit(-1);
+            }
+            newlayer.ResetReading();
+            FeatureDefn newfeaturedfn = newlayer.GetLayerDefn();
+            for (int i = 0; i < newfeaturedfn.GetFieldCount(); i++)
+            {
+                FieldDefn fielddefn = newfeaturedfn.GetFieldDefn(i);
+                if (fielddefn.GetName() == fieldname)
+                {
+                    gotit = true;
+                    break;
+                }
+            }
+            if (gotit == false)
+            {
+                Console.WriteLine("    [-] Could not find tile name field. Please provide shapefile with the attribute field TypeName");
+            }
+            for (int i = 0; i < newlayer.GetFeatureCount(1); i++)
+            {
+                Feature newfeature = newlayer.GetFeature(i);
+                string result = newfeature.GetFieldAsString(fieldname);
+                tilenames.Add(result);
+            }
+            return tilenames;
         }
     }
 }
