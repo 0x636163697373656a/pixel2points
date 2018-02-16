@@ -493,10 +493,10 @@ namespace pixels2points
                 List<List<double>> results = new List<List<double>>();
                 for (int r = 0; r < (Cols - 1); r++)
                 {
-                    if (buf[r] < 20 && buf2[r] < 20 && buf3[r] < 20)
+                    if (buf[r] < 10 && buf2[r] < 10 && buf3[r] < 10)
                     {
                         x = startX + r * interval;  //current lon                             
-                        if (buf[r + 1] < 20 && buf2[r + 1] < 20 && buf3[r + 1] < 20)
+                        if (buf[r + 1] < 10 && buf2[r + 1] < 10 && buf3[r + 1] < 10)
                         {
                             //only add pixels if they're clustered together
                             //this way, you avoid all the errant little shadows that aren't actual data voids
