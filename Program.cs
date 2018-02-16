@@ -491,7 +491,7 @@ namespace pixels2points
                 blueband.ReadRaster(0, k, Cols, 1, buf3, Cols, 1, 0, 0);
                 //iterate each item in one line
                 List<List<double>> results = new List<List<double>>();
-                for (int r = 0; r < Cols; r++)
+                for (int r = 0; r < (Cols - 1); r++)
                 {
                     if (buf[r] < 20 && buf2[r] < 20 && buf3[r] < 20)
                     {
