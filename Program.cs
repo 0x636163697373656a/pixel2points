@@ -39,9 +39,10 @@ namespace pixels2points
 
             argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
-            argshelp = String.Concat(argshelp, "-o\t\t\toutput file (csv format)\r\n");
+            argshelp = String.Concat(argshelp, "-o\t\t\toutput file (.csv or .shp format)\r\n");
             argshelp = String.Concat(argshelp, "Optional Arguments:\r\n");
             argshelp = String.Concat(argshelp, "-m\t\t\tmask shapefile to limit which tiffs are processed");
+            //make sure program has been provided the correct args
             if (args.Length < 4)
             {
                 Console.WriteLine(argshelp);
@@ -97,12 +98,13 @@ namespace pixels2points
                 }
             }
 
+            //register gdal/ogr drivers
             Console.WriteLine(">Registering GDAL Drivers...");
             GdalConfiguration.ConfigureGdal();
             Console.WriteLine(">Registering OGR Drivers...");
             GdalConfiguration.ConfigureOgr();
 
-
+            //find all tif files in directory from args
             Console.WriteLine(">Searching directory for tiffs...        ");
             searchresults = fileops.GetTifFilePathsFromDirectory(inputdirectory);
             if (!searchresults.Any())
@@ -137,6 +139,7 @@ namespace pixels2points
                 }
             }
 
+            //find the coordinates of all pixels that are likely to be data voids
             Console.WriteLine(">Parsing tiffs for black pixels...    ");
             row = Console.CursorTop - 1;
             col = Console.CursorLeft + 35;
@@ -144,71 +147,92 @@ namespace pixels2points
             spinner.Start();
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
-            //let's see if it's worth the extra overhead
+            //let's see if there's enough work being done to justify the added complexity
+            //(this is just a request to the task scheduler, it doesn't guarantee parallelism)
+            //most gdal objects are not thread-safe but with parallel foreach,
+            //each *iteration* of the method will have exactly one thread, so should be no gdal objects shared between threads
             if (IsParallel == true)
             {
                 findpix.ParallelFindNoData(searchresults);
             }
             else
             {
+                int i = 0;
                 foreach (var result in searchresults)
                 {
+                    Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
+                    Console.Write("    [+] {0} out of {1} files processed", i, searchresults.Count);
                     findpix.FindNoDataXYCoords(result, false);
+                    i += 1;
                 }
             }
-            //for (int i = 0; i < searchresults.Count; i++)
-            //{
-                //Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
-                //Console.WriteLine("    [+] {0} out of {1} files processed", i, searchresults.Count);
-                //string filename = searchresults[i];
-                //findpix.FindNoDataXYCoords(filename, i);
-            //}
             spinner.Stop();
             stopwatch.Stop();
             TimeSpan ts = stopwatch.Elapsed;
             Console.WriteLine("    [+] Finished processing. Processing time: {0:hh\\:mm\\:ss}", ts);
 
+            //see if any results were actually returned
+            if (IsParallel == true)
+            {
+                if (ResultCoords.concurrentresults.IsEmpty == true)
+                {
+                    Console.WriteLine("    [-] No data voids found! Nothing left to do.");
+                    return;
+                }
+            }
+            else
+            {
+                if (!ResultCoords.results.Any())
+                {
+                    Console.WriteLine("    [-] No data voids found! Nothing left to do.");
+                    return;
+                }
+            }
+
+            //write output to csv if output file arg was a *.csv
             if (Path.GetExtension(outputfile) == ".csv")
             {
                 Console.WriteLine(">Creating {0}...", outputfile);
                 //crossing streams...
-                csvfilestream = fileops.CheckandCreateCSV(outputfile);
-                if (csvfilestream == null)
+                //it's okay as long as caller remembers to wrap it in using() { }
+                using (csvfilestream = fileops.CheckandCreateCSV(outputfile))
                 {
-                    Console.WriteLine("    [-] Could not create file for editing. Exiting");
-                    return;
-                }
-                Console.WriteLine("    [+] Successfully created file");
-                Console.WriteLine(">Writing results to {0}...", outputfile);
-                if (IsParallel == true)
-                {
-                    foreach (var result in ResultCoords.concurrentresults)
+                    if (csvfilestream == null)
                     {
-                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                        Console.WriteLine("    [-] Could not create file for editing. Exiting");
+                        return;
                     }
-                }
-                else
-                {
-                    foreach (var result in ResultCoords.results)
+                    Console.WriteLine("    [+] Successfully created file");
+                    Console.WriteLine(">Writing results to {0}...", outputfile);
+                    if (IsParallel == true)
                     {
-                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                        foreach (var result in ResultCoords.concurrentresults)
+                        {
+                            byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
+                            csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                            ResultCoords.concurrentresults = null;
+                        }
                     }
+                    else
+                    {
+                        foreach (var result in ResultCoords.results)
+                        {
+                            byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
+                            csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                        }
+                    }
+                    Console.WriteLine("    [+] Done!");
                 }
-                Console.WriteLine("    [+] Done!");
                 // in case the file stream is still open
                 if (csvfilestream != null)
                 {
                     csvfilestream.Dispose();
                 }                
-                //help out the garbage collector
-                ResultCoords.results = null;
-                ResultCoords.concurrentresults = null;
-                GC.Collect();
                 return;
             }
 
+            //write output to shapefile if output file arg was *.shp
+            //shp will contain multipoint features, one for each tiff
             if (Path.GetExtension(outputfile) == ".shp" )
             {
                 Console.WriteLine(">Retrieving Projection Reference...");
@@ -219,13 +243,11 @@ namespace pixels2points
                     return;
                 }
                 Console.WriteLine("    [+] Got projection reference.");
-                List<string> coordslist = ResultCoords.concurrentresults.ToList();
-                //help out the garbage collector
-                ResultCoords.concurrentresults = null;
-                GC.Collect();
                 Console.WriteLine(">Creating shapefile...");
                 if (IsParallel == true)
                 {
+                    List<string> coordslist = ResultCoords.concurrentresults.ToList();
+                    ResultCoords.concurrentresults = null;
                     convexhull.CreateShapeFile(spatialref, coordslist, outputfile);
                 }
                 else
@@ -233,8 +255,6 @@ namespace pixels2points
                     convexhull.CreateShapeFile(spatialref, ResultCoords.results, outputfile);
                 }
                 Console.WriteLine("    [+] Done!");
-                coordslist = null;
-                ResultCoords.results = null;
             }
         }
     }
@@ -434,6 +454,7 @@ namespace pixels2points
                 return spatialref;
             }
             spatialref = ds.GetProjectionRef();
+            ds.Dispose();
             return spatialref;
         }
     }
@@ -444,8 +465,8 @@ namespace pixels2points
         {
             try
             {
-                //trust the lambda. the lambda is your friend
-                Parallel.ForEach(searchresults, 
+                Parallel.ForEach(searchresults,
+                                new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount >> 1},
                                 (result) => 
                                 {
                                     FindNoDataXYCoords(result, true);
@@ -459,9 +480,21 @@ namespace pixels2points
 
         public void FindNoDataXYCoords(string filepath, bool para)
         {
-            List<int> resolutionId = new List<int>() { 9 };
-
+            //returns coordinates of points below a certain value, but only if N adjacent
+            //nodes also fall below that value. the goal is to only identify anomalous clusters
+            //of near-0 points ('data voids')
             Dataset ds = Gdal.Open(filepath, Access.GA_ReadOnly);   //Read raster
+            if (ds == null)
+            {
+                Console.WriteLine("    [-] Could not create raster dataset from file.");
+                return;
+            }
+            if (ds.RasterCount < 3)
+            {
+                Console.WriteLine("    [-] Need at least a three band raster image.");
+                ds.Dispose();
+                return;
+            }
             double[] gt = new double[6];
             ds.GetGeoTransform(gt); //Read geo transform info into array
             int Rows = ds.RasterYSize;
@@ -473,7 +506,6 @@ namespace pixels2points
             double startY = gt[3];  //Upper left lat
             double interval = gt[1];    //Cell size
             double x, y;    //Current lon and lat
-
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
             int adjacencythreshold = 20;
@@ -482,21 +514,27 @@ namespace pixels2points
             {
                 adjacencycount = 0;
                 y = startY - k * interval;  //current lat
-                int[] buf = new int[Cols];
-                int[] buf2 = new int[Cols];
-                int[] buf3 = new int[Cols];
+                int[][] buf = new int[3][];
+                buf[0] = new int[Cols];
+                buf[1] = new int[Cols];
+                buf[2] = new int[Cols];
                 //ReadRaster parameters are StartCol, StartRow, ColumnsToRead, RowsToRead, BufferToStoreInto, BufferColumns, BufferRows, 0, 0
-                redband.ReadRaster(0, k, Cols, 1, buf, Cols, 1, 0, 0);
-                greenband.ReadRaster(0, k, Cols, 1, buf2, Cols, 1, 0, 0);
-                blueband.ReadRaster(0, k, Cols, 1, buf3, Cols, 1, 0, 0);
+                redband.ReadRaster(0, k, Cols, 1, buf[0], Cols, 1, 0, 0);
+                greenband.ReadRaster(0, k, Cols, 1, buf[1], Cols, 1, 0, 0);
+                blueband.ReadRaster(0, k, Cols, 1, buf[2], Cols, 1, 0, 0);
+                List<List<double>> pixlists = new List<List<double>>();
                 //iterate each item in one line
-                List<List<double>> results = new List<List<double>>();
                 for (int r = 0; r < (Cols - 1); r++)
                 {
-                    if (buf[r] < 10 && buf2[r] < 10 && buf3[r] < 10)
+                    //if we have reached this point then no additional coordinates will be found, so might as well avoid array accesses
+                    if (r >= (Cols - adjacencythreshold) && adjacencycount < adjacencythreshold)
+                    {
+                        break;
+                    }
+                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
                     {
                         x = startX + r * interval;  //current lon                             
-                        if (buf[r + 1] < 10 && buf2[r + 1] < 10 && buf3[r + 1] < 10)
+                        if (buf[0][r + 1] <= 10 && buf[1][r + 1] <= 10 && buf[2][r + 1] <= 10)
                         {
                             //only add pixels if they're clustered together
                             //this way, you avoid all the errant little shadows that aren't actual data voids
@@ -504,7 +542,7 @@ namespace pixels2points
                             List<double> potentialresult = new List<double>();
                             potentialresult.Add(x);
                             potentialresult.Add(y);
-                            results.Add(potentialresult);
+                            pixlists.Add(potentialresult);
                             ++adjacencycount;
                         }
                         else
@@ -520,9 +558,11 @@ namespace pixels2points
                     {
                         for (int i = 0; i < adjacencythreshold; i++)
                         {
-                            int ndex = results.Count() - 1;
-                            List<double> actualresult = results[ndex];
-                            results.Remove(results[ndex]);
+                            //the enumerator for List<T> will go through elements in the order in which they were created,
+                            //so this will simply take the most recently added element and add it to results
+                            int ndex = pixlists.Count() - 1;
+                            List<double> actualresult = pixlists[ndex];
+                            pixlists.Remove(pixlists[ndex]);
                             double thisx = actualresult[0];
                             double thisy = actualresult[1];
                             string csvline = string.Format("{0},{1},{2}{3}", thisx, thisy, filename, Environment.NewLine);
@@ -548,6 +588,7 @@ namespace pixels2points
         private IEnumerable<List<string>> ReturnClusterCoords(List<string> querylist)
         {
             //more LINQ weirdness
+            //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
             var groupedlist = from l in querylist.Skip(1)
                               let x = l.Split(',')
                               group l by x[2] into g
@@ -565,34 +606,43 @@ namespace pixels2points
                 return;
             }
             SpatialReference spatialref = new SpatialReference(projref);
+            //a list of lists, each represent a separate tile name
+            //lists everywhere (it's fine, it'll go out of scope and get GC'd soon...)
             IEnumerable<List<string>> coordsbycluster = ReturnClusterCoords(xycoords);
+            //create new datasource
             DataSource shapefileds = shpdriver.CreateDataSource(Path.GetDirectoryName(shapefilepath), new string[] { });
             if (shapefileds == null)
             {
                 Console.WriteLine("    [-] Couldn't create shapefile datasource.");
+                return;
             }
+            //new field to add the tile name to
             FieldDefn newfield = new FieldDefn("TileName", FieldType.OFTString);
             string fname = Path.GetFileName(shapefilepath);
+            //create new layer to add features to
             Layer newlayer = shapefileds.CreateLayer(Path.ChangeExtension(fname, null), spatialref, wkbGeometryType.wkbMultiPoint, new string[] { });
             if (newlayer == null)
             {
                 Console.WriteLine("    [-] Layer creation failed.");
+                shapefileds.Dispose();
+                newlayer.Dispose();
                 return;
             }
             if (newlayer.CreateField(newfield, 1) != Ogr.OGRERR_NONE)
             {
                 Console.WriteLine("    [-] Creating TileName field failed.");
+                shapefileds.Dispose();
+                newfield.Dispose();
                 return;
             }
             foreach (var cluster in coordsbycluster)
             {
+                //create new point geometry for every element in each list
                 Feature newfeature = new Feature(newlayer.GetLayerDefn());
                 Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                 clustergeom.AssignSpatialReference(spatialref);
                 foreach (var point in cluster)
                 {
-                    //wuhhh
-                    //Tuple<double, double> pointxy = new Tuple<double, double>(Convert.ToDouble(point.Split(',')[0]), Convert.ToDouble(point.Split(',')[1]));
                     double x = Convert.ToDouble(point.Split(',')[0]);
                     double y = Convert.ToDouble(point.Split(',')[1]);
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
@@ -600,14 +650,21 @@ namespace pixels2points
                     clustergeom.AddGeometry(newpoint);
                 }
                 string layername = (cluster.First()).Split(',').Last();
+                //set "TileName" to last comma-separated element in sublist (the tile name...)
                 newfeature.SetField("TileName", layername);
                 newfeature.SetGeometry(clustergeom);
                 if (newlayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
                 {
                     Console.WriteLine("    [-] Failed to create feature in shapefile.");
+                    shapefileds.Dispose();
+                    return;
                 }
                 newfeature.Dispose();
+                clustergeom.Dispose();
             }
+            shapefileds.Dispose();
+            newfield.Dispose();
+            newlayer.Dispose();
         }
     }
 
@@ -622,19 +679,21 @@ namespace pixels2points
             DataSource ds1 = Ogr.Open(shpfilepath, 0);
             if (ds1 == null)
             {
-                Console.WriteLine("Can't open {0}", shpfilepath);
-                System.Environment.Exit(-1);
+                Console.WriteLine("    [-] Could not open {0}", shpfilepath);
+                return tilenames;
             }
             Layer newlayer = ds1.GetLayerByIndex(0);
             if (newlayer == null)
             {
-                Console.WriteLine("FAILURE: Couldn't fetch layer");
-                System.Environment.Exit(-1);
+                Console.WriteLine("    [-] Could not fetch layer.");
+                ds1.Dispose();
+                return tilenames;
             }
             newlayer.ResetReading();
             FeatureDefn newfeaturedfn = newlayer.GetLayerDefn();
             for (int i = 0; i < newfeaturedfn.GetFieldCount(); i++)
             {
+                //find TileName field in provided shapefile
                 FieldDefn fielddefn = newfeaturedfn.GetFieldDefn(i);
                 if (fielddefn.GetName() == fieldname)
                 {
@@ -644,14 +703,18 @@ namespace pixels2points
             }
             if (gotit == false)
             {
-                Console.WriteLine("    [-] Could not find tile name field. Please provide shapefile with the attribute field TypeName");
+                Console.WriteLine("    [-] Could not find tile name field. Please provide shapefile with the attribute field TileName");
+                ds1.Dispose();
+                return tilenames;
             }
             for (int i = 0; i < newlayer.GetFeatureCount(1); i++)
             {
+                //return each string for TileName field in shapefile
                 Feature newfeature = newlayer.GetFeature(i);
                 string result = newfeature.GetFieldAsString(fieldname);
                 tilenames.Add(result);
             }
+            ds1.Dispose();
             return tilenames;
         }
     }
