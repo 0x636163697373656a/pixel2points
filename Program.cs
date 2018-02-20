@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Security;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
@@ -547,6 +547,7 @@ namespace pixels2points
                     else
                     {
                         adjacencycount = 0;
+                        previous = false;
                         if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
                         {
                             previous = true;
