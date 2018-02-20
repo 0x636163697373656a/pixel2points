@@ -523,36 +523,34 @@ namespace pixels2points
                 greenband.ReadRaster(0, k, Cols, 1, buf[1], Cols, 1, 0, 0);
                 blueband.ReadRaster(0, k, Cols, 1, buf[2], Cols, 1, 0, 0);
                 List<List<double>> pixlists = new List<List<double>>();
+                bool previous = false;
                 //iterate each item in one line
-                for (int r = 0; r < (Cols - 1); r++)
+                for (int r = 0; r < (Cols - 1); r ++)
                 {
                     //if we have reached this point then no additional coordinates will be found, so might as well avoid array accesses
                     if (r >= (Cols - adjacencythreshold) && adjacencycount < adjacencythreshold)
                     {
                         break;
                     }
-                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
+                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10 && previous == true)
                     {
+                        //only add pixels if they're clustered together
+                        //this way, you avoid all the errant little shadows that aren't actual data voids
+                        //needs reworking
                         x = startX + r * interval;  //current lon                             
-                        if (buf[0][r + 1] == 10 && buf[1][r + 1] == 10 && buf[2][r + 1] == 10)
-                        {
-                            //only add pixels if they're clustered together
-                            //this way, you avoid all the errant little shadows that aren't actual data voids
-                            //needs reworking
-                            List<double> potentialresult = new List<double>();
-                            potentialresult.Add(x);
-                            potentialresult.Add(y);
-                            pixlists.Add(potentialresult);
-                            ++adjacencycount;
-                        }
-                        else
-                        {
-                            adjacencycount = 0;
-                        }
+                        List<double> potentialresult = new List<double>();
+                        potentialresult.Add(x);
+                        potentialresult.Add(y);
+                        pixlists.Add(potentialresult);
+                        ++adjacencycount;
                     }
                     else
                     {
                         adjacencycount = 0;
+                        if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
+                        {
+                            previous = true;
+                        }
                     }
                     if (adjacencycount == adjacencythreshold)
                     {
