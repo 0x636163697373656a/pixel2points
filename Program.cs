@@ -525,7 +525,7 @@ namespace pixels2points
                 List<List<double>> pixlists = new List<List<double>>();
                 bool previous = false;
                 //iterate each item in one line
-                for (int r = 0; r < (Cols - 1); r ++)
+                for (int r = 0; r < Cols; r ++)
                 {
                     //if we have reached this point then no additional coordinates will be found, so might as well avoid array accesses
                     if (r >= (Cols - adjacencythreshold) && adjacencycount < adjacencythreshold)
