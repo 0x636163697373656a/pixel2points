@@ -32,7 +32,7 @@ namespace pixels2points
             System.IO.FileStream csvfilestream;
             HandleFileInput fileops = new HandleFileInput();
             FindNoDataPixels findpix = new FindNoDataPixels();
-            CreateMultiPointShp convexhull = new CreateMultiPointShp();
+            CreateConvexHullShp convexhull = new CreateConvexHullShp();
             GetSpatialReference getspatialref = new GetSpatialReference();
             GenerateMaskList maskinput = new GenerateMaskList();
             bool IsParallel = false;
@@ -534,7 +534,7 @@ namespace pixels2points
                     if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
                     {
                         x = startX + r * interval;  //current lon                             
-                        if (buf[0][r + 1] <= 10 && buf[1][r + 1] <= 10 && buf[2][r + 1] <= 10)
+                        if (buf[0][r + 1] == 10 && buf[1][r + 1] == 10 && buf[2][r + 1] == 10)
                         {
                             //only add pixels if they're clustered together
                             //this way, you avoid all the errant little shadows that aren't actual data voids
@@ -583,7 +583,7 @@ namespace pixels2points
         }
     }
 
-    public class CreateMultiPointShp
+    public class CreateConvexHullShp
     {
         private IEnumerable<List<string>> ReturnClusterCoords(List<string> querylist)
         {
@@ -620,7 +620,7 @@ namespace pixels2points
             FieldDefn newfield = new FieldDefn("TileName", FieldType.OFTString);
             string fname = Path.GetFileName(shapefilepath);
             //create new layer to add features to
-            Layer newlayer = shapefileds.CreateLayer(Path.ChangeExtension(fname, null), spatialref, wkbGeometryType.wkbMultiPoint, new string[] { });
+            Layer newlayer = shapefileds.CreateLayer(Path.ChangeExtension(fname, null), spatialref, wkbGeometryType.wkbPolygon, new string[] { });
             if (newlayer == null)
             {
                 Console.WriteLine("    [-] Layer creation failed.");
@@ -652,15 +652,20 @@ namespace pixels2points
                 string layername = (cluster.First()).Split(',').Last();
                 //set "TileName" to last comma-separated element in sublist (the tile name...)
                 newfeature.SetField("TileName", layername);
-                newfeature.SetGeometry(clustergeom);
+                Geometry hullgeom = clustergeom.ConvexHull();
+                newfeature.SetGeometry(hullgeom);
                 if (newlayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
                 {
                     Console.WriteLine("    [-] Failed to create feature in shapefile.");
                     shapefileds.Dispose();
+                    newfeature.Dispose();
+                    clustergeom.Dispose();
+                    hullgeom.Dispose();
                     return;
                 }
                 newfeature.Dispose();
                 clustergeom.Dispose();
+                hullgeom.Dispose();
             }
             shapefileds.Dispose();
             newfield.Dispose();
