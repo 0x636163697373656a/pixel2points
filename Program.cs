@@ -597,6 +597,7 @@ namespace pixels2points
 
         public void CreateShapeFile(string projref, List<string> xycoords, string shapefilepath)
         {
+            //creates a shapefile with a separate geometry feature for each tile in the results list
             string drivertype = "ESRI Shapefile";
             OSGeo.OGR.Driver shpdriver = Ogr.GetDriverByName(drivertype);
             if (shpdriver == null)
@@ -652,7 +653,20 @@ namespace pixels2points
                 //set "TileName" to last comma-separated element in sublist (the tile name...)
                 newfeature.SetField("TileName", layername);
                 Geometry hullgeom = clustergeom.ConvexHull();
-                newfeature.SetGeometry(hullgeom);
+                // ConvexHull() can return multiple types (ughh), left up to caller to handle this
+                if (hullgeom.GetGeometryType() == wkbGeometryType.wkbLineString)
+                {
+                    //easiest way to "convert" a linestring to polygon
+                    //Buffer(double distance, int quadsecs) where distance is represented in same
+                    //units as coordinate system (ie meters) and quadsecs = number of segments in
+                    //a 90 degree angle
+                    Geometry polygeom = hullgeom.Buffer(5.0, 30);
+                    newfeature.SetGeometry(polygeom);
+                }
+                else
+                {
+                    newfeature.SetGeometry(hullgeom);
+                }
                 if (newlayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
                 {
                     Console.WriteLine("    [-] Failed to create feature in shapefile.");
