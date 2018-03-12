@@ -570,10 +570,20 @@ namespace pixels2points
                             string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
                             if (para == true)
                             {
+                                if (ResultCoords.concurrentresults.Count > 600000)
+                                {
+                                    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                    Environment.Exit(1);
+                                }
                                 ResultCoords.concurrentresults.Add(csvline);
                             }
                             else
                             {
+                                if (ResultCoords.results.Count > 600000)
+                                {
+                                    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                    Environment.Exit(1);
+                                }
                                 ResultCoords.results.Add(csvline);
                             }
                         }
@@ -665,7 +675,7 @@ namespace pixels2points
             }
             foreach (var cluster in coordsbycluster)
             {
-                //List<string> cluster = clusterlist.OrderBy(x => x.Split(',')[2]).ToList();
+                //List<string> cluster = clusterlist.OrderBy(x => Convert.ToInt32(x.Split(',')[2])).ToList();
                 //create new point geometry for every element in each list
                 Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                 clustergeom.AssignSpatialReference(spatialref);
