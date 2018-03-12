@@ -539,8 +539,10 @@ namespace pixels2points
                         //needs reworking
                         x = startX + r * interval;  //current lon                             
                         List<double> potentialresult = new List<double>();
+                        double distance = Convert.ToDouble(k);
                         potentialresult.Add(x);
                         potentialresult.Add(y);
+                        potentialresult.Add(distance);
                         pixlists.Add(potentialresult);
                         ++adjacencycount;
                     }
@@ -564,7 +566,8 @@ namespace pixels2points
                             pixlists.Remove(pixlists[ndex]);
                             double thisx = actualresult[0];
                             double thisy = actualresult[1];
-                            string csvline = string.Format("{0},{1},{2}{3}", thisx, thisy, filename, Environment.NewLine);
+                            double column = actualresult[2];
+                            string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
                             if (para == true)
                             {
                                 ResultCoords.concurrentresults.Add(csvline);
@@ -590,9 +593,35 @@ namespace pixels2points
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
             var groupedlist = from l in querylist.Skip(1)
                               let x = l.Split(',')
-                              group l by x[2] into g
+                              group l by x[3] into g
                               select g.ToList();
             return groupedlist;
+        }
+
+        private void CreateFeature(Layer featurelayer, string layername, Geometry newgeom)
+        {
+            //set "TileName" to last comma-separated element in sublist (the tile name...)
+            Feature newfeature = new Feature(featurelayer.GetLayerDefn());
+            newfeature.SetField("TileName", layername);
+            Geometry hullgeom = newgeom.ConvexHull();
+            // ConvexHull() can return multiple types (ughh), left up to caller to handle this
+            //easiest way to "convert" a linestring to polygon
+            //Buffer(double distance, int quadsecs) where distance is represented in same
+            //units as coordinate system (ie meters) and quadsecs = number of segments in
+            //a 90 degree angle
+            Geometry polygeom = hullgeom.Buffer(1.0, 30);
+            newfeature.SetGeometry(polygeom);
+            if (featurelayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
+            {
+                Console.WriteLine("    [-] Failed to create feature in shapefile.");
+                newfeature.Dispose();
+                newgeom.Dispose();
+                hullgeom.Dispose();
+                return;
+            }
+            newfeature.Dispose();
+            newgeom.Dispose();
+            hullgeom.Dispose();
         }
 
         public void CreateShapeFile(string projref, List<string> xycoords, string shapefilepath)
@@ -607,7 +636,6 @@ namespace pixels2points
             }
             SpatialReference spatialref = new SpatialReference(projref);
             //a list of lists, each represent a separate tile name
-            //lists everywhere (it's fine, it'll go out of scope and get GC'd soon...)
             IEnumerable<List<string>> coordsbycluster = ReturnClusterCoords(xycoords);
             //create new datasource
             DataSource shapefileds = shpdriver.CreateDataSource(Path.GetDirectoryName(shapefilepath), new string[] { });
@@ -637,48 +665,33 @@ namespace pixels2points
             }
             foreach (var cluster in coordsbycluster)
             {
+                //List<string> cluster = clusterlist.OrderBy(x => x.Split(',')[2]).ToList();
                 //create new point geometry for every element in each list
-                Feature newfeature = new Feature(newlayer.GetLayerDefn());
                 Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                 clustergeom.AssignSpatialReference(spatialref);
+                string layername = (cluster.First()).Split(',').Last();
+                int prevrow = 0;
                 foreach (var point in cluster)
                 {
                     double x = Convert.ToDouble(point.Split(',')[0]);
                     double y = Convert.ToDouble(point.Split(',')[1]);
+                    int currw = Convert.ToInt32(point.Split(',')[2]);
+                    int distance = currw - prevrow;
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
+                    if (distance > 3400)
+                    {
+                        CreateFeature(newlayer, layername, clustergeom);
+                        clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
+                    }
+                    prevrow = 0;
+                    prevrow = Convert.ToInt32(point.Split(',')[2]);
                 }
-                string layername = (cluster.First()).Split(',').Last();
-                //set "TileName" to last comma-separated element in sublist (the tile name...)
-                newfeature.SetField("TileName", layername);
-                Geometry hullgeom = clustergeom.ConvexHull();
-                // ConvexHull() can return multiple types (ughh), left up to caller to handle this
-                if (hullgeom.GetGeometryType() == wkbGeometryType.wkbLineString)
+                if (!clustergeom.IsEmpty())
                 {
-                    //easiest way to "convert" a linestring to polygon
-                    //Buffer(double distance, int quadsecs) where distance is represented in same
-                    //units as coordinate system (ie meters) and quadsecs = number of segments in
-                    //a 90 degree angle
-                    Geometry polygeom = hullgeom.Buffer(5.0, 30);
-                    newfeature.SetGeometry(polygeom);
+                    CreateFeature(newlayer, layername, clustergeom);
                 }
-                else
-                {
-                    newfeature.SetGeometry(hullgeom);
-                }
-                if (newlayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
-                {
-                    Console.WriteLine("    [-] Failed to create feature in shapefile.");
-                    shapefileds.Dispose();
-                    newfeature.Dispose();
-                    clustergeom.Dispose();
-                    hullgeom.Dispose();
-                    return;
-                }
-                newfeature.Dispose();
-                clustergeom.Dispose();
-                hullgeom.Dispose();
             }
             shapefileds.Dispose();
             newfield.Dispose();
