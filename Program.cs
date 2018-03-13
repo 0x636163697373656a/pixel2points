@@ -508,7 +508,7 @@ namespace pixels2points
             double x, y;    //Current lon and lat
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
-            int adjacencythreshold = 20;
+            int adjacencythreshold = 30;
 
             for (int k = 0; k < Rows; k++)  //read one line
             {
@@ -570,6 +570,7 @@ namespace pixels2points
                             string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
                             if (para == true)
                             {
+                                //ConcurrentBag.Count is O(1)
                                 if (ResultCoords.concurrentresults.Count > 600000)
                                 {
                                     Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
@@ -681,6 +682,7 @@ namespace pixels2points
                 clustergeom.AssignSpatialReference(spatialref);
                 string layername = (cluster.First()).Split(',').Last();
                 int prevrow = 0;
+                int iter = 0;
                 foreach (var point in cluster)
                 {
                     double x = Convert.ToDouble(point.Split(',')[0]);
@@ -690,15 +692,17 @@ namespace pixels2points
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
+                    ++iter;
                     if (distance > 3400)
                     {
+                        iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
                         clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                     }
                     prevrow = 0;
                     prevrow = Convert.ToInt32(point.Split(',')[2]);
                 }
-                if (!clustergeom.IsEmpty())
+                if (!clustergeom.IsEmpty() && iter > 20)
                 {
                     CreateFeature(newlayer, layername, clustergeom);
                 }
