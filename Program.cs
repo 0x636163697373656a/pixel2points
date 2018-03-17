@@ -681,14 +681,24 @@ namespace pixels2points
                 Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                 clustergeom.AssignSpatialReference(spatialref);
                 string layername = (cluster.First()).Split(',').Last();
-                int prevrow = 0;
                 int iter = 0;
-                foreach (var point in cluster)
+                for (int i = 0; i < (cluster.Count()); i++)
                 {
+                    string point = cluster[i];
+                    string nextpoint;
+                    if (!(i == cluster.Count() - 1))
+                    {
+                        nextpoint = cluster[i + 1];
+                    }
+                    else
+                    {
+                        nextpoint = point;
+                    }
                     double x = Convert.ToDouble(point.Split(',')[0]);
                     double y = Convert.ToDouble(point.Split(',')[1]);
                     int currw = Convert.ToInt32(point.Split(',')[2]);
-                    int distance = currw - prevrow;
+                    int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
+                    int distance = nextrw - currw;
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
@@ -697,10 +707,9 @@ namespace pixels2points
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
+                        clustergeom = null;
                         clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                     }
-                    prevrow = 0;
-                    prevrow = Convert.ToInt32(point.Split(',')[2]);
                 }
                 if (!clustergeom.IsEmpty() && iter > 20)
                 {
