@@ -725,7 +725,7 @@ namespace pixels2points
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
-                    if (distance > 3400)
+                    if (distance > 3000)
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
