@@ -478,6 +478,22 @@ namespace pixels2points
             }
         }
 
+        private List<List<double>> ReduceXYList(List<List<double>> toreduce)
+        {
+            List<List<double>> reduced = new List<List<double>>();
+            int iter = 0;
+            foreach (var result in toreduce)
+            {
+                if (iter >= 1000)
+                {
+                    reduced.Add(result);
+                    iter = 0;
+                }
+                iter += 1;
+            }
+            return reduced;
+       }
+
         public void FindNoDataXYCoords(string filepath, bool para)
         {
             //returns coordinates of points below a certain value, but only if N adjacent
@@ -543,6 +559,11 @@ namespace pixels2points
                         potentialresult.Add(x);
                         potentialresult.Add(y);
                         potentialresult.Add(distance);
+                        //adding this because Lucas doesn't like making mask shapefile...
+                        if (pixlists.Count() > 50000)
+                        {
+                            pixlists = ReduceXYList(pixlists);
+                        }
                         pixlists.Add(potentialresult);
                         ++adjacencycount;
                     }
@@ -570,21 +591,22 @@ namespace pixels2points
                             string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
                             if (para == true)
                             {
+                                //trying something else because mask file is an imposition
                                 //ConcurrentBag.Count is O(1)
-                                if (ResultCoords.concurrentresults.Count > 600000)
-                                {
-                                    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                    Environment.Exit(1);
-                                }
+                                //if (ResultCoords.concurrentresults.Count > 600000)
+                                //{
+                                //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                //    Environment.Exit(1);
+                                //}
                                 ResultCoords.concurrentresults.Add(csvline);
                             }
                             else
                             {
-                                if (ResultCoords.results.Count > 600000)
-                                {
-                                    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                    Environment.Exit(1);
-                                }
+                                //if (ResultCoords.results.Count > 600000)
+                                //{
+                                //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                //    Environment.Exit(1);
+                                //}
                                 ResultCoords.results.Add(csvline);
                             }
                         }
