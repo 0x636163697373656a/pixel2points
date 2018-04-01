@@ -525,6 +525,7 @@ namespace pixels2points
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
             int adjacencythreshold = 30;
+            bool previousrow = false;
 
             for (int k = 0; k < Rows; k++)  //read one line
             {
@@ -540,6 +541,7 @@ namespace pixels2points
                 blueband.ReadRaster(0, k, Cols, 1, buf[2], Cols, 1, 0, 0);
                 List<List<double>> pixlists = new List<List<double>>();
                 bool previous = false;
+                bool hasblackpx = false;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r ++)
                 {
@@ -556,15 +558,18 @@ namespace pixels2points
                         x = startX + r * interval;  //current lon                             
                         List<double> potentialresult = new List<double>();
                         double distance = Convert.ToDouble(k);
-                        potentialresult.Add(x);
-                        potentialresult.Add(y);
-                        potentialresult.Add(distance);
                         //adding this because Lucas doesn't like making mask shapefile...
-                        if (pixlists.Count() > 50000)
+                        if (pixlists.Count() > 4000)
                         {
                             pixlists = ReduceXYList(pixlists);
                         }
-                        pixlists.Add(potentialresult);
+                        if (previousrow == true)
+                        {
+                            potentialresult.Add(x);
+                            potentialresult.Add(y);
+                            potentialresult.Add(distance);
+                            pixlists.Add(potentialresult);
+                        }
                         ++adjacencycount;
                     }
                     else
@@ -578,40 +583,52 @@ namespace pixels2points
                     }
                     if (adjacencycount == adjacencythreshold)
                     {
-                        for (int i = 0; i < adjacencythreshold; i++)
+                        hasblackpx = true;
+                        if (previousrow == true)
                         {
-                            //the enumerator for List<T> will go through elements in the order in which they were created,
-                            //so this will simply take the most recently added element and add it to results
-                            int ndex = pixlists.Count() - 1;
-                            List<double> actualresult = pixlists[ndex];
-                            pixlists.Remove(pixlists[ndex]);
-                            double thisx = actualresult[0];
-                            double thisy = actualresult[1];
-                            double column = actualresult[2];
-                            string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
-                            if (para == true)
+                            for (int i = 0; i < adjacencythreshold; i++)
                             {
-                                //trying something else because mask file is an imposition
-                                //ConcurrentBag.Count is O(1)
-                                //if (ResultCoords.concurrentresults.Count > 600000)
-                                //{
-                                //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                //    Environment.Exit(1);
-                                //}
-                                ResultCoords.concurrentresults.Add(csvline);
-                            }
-                            else
-                            {
-                                //if (ResultCoords.results.Count > 600000)
-                                //{
-                                //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                //    Environment.Exit(1);
-                                //}
-                                ResultCoords.results.Add(csvline);
+                                //the enumerator for List<T> will go through elements in the order in which they were created,
+                                //so this will simply take the most recently added element and add it to results
+                                int ndex = pixlists.Count() - 1;
+                                List<double> actualresult = pixlists[ndex];
+                                pixlists.Remove(pixlists[ndex]);
+                                double thisx = actualresult[0];
+                                double thisy = actualresult[1];
+                                double column = actualresult[2];
+                                string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
+                                if (para == true)
+                                {
+                                    //trying something else because mask file is an imposition
+                                    //ConcurrentBag.Count is O(1)
+                                    //if (ResultCoords.concurrentresults.Count > 600000)
+                                    //{
+                                    //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                    //    Environment.Exit(1);
+                                    //}
+                                    ResultCoords.concurrentresults.Add(csvline);
+                                }
+                                else
+                                {
+                                    //if (ResultCoords.results.Count > 600000)
+                                    //{
+                                    //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                    //    Environment.Exit(1);
+                                    //}
+                                    ResultCoords.results.Add(csvline);
+                                }
                             }
                         }
                         adjacencycount = 0;
                     }
+                }
+                if (hasblackpx == true)
+                {
+                    previousrow = true;
+                }
+                else
+                {
+                    previousrow = false;
                 }
             }
             ds.Dispose();
