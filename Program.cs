@@ -546,8 +546,13 @@ namespace pixels2points
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
-                    int[] currentpixel = new int[3] { buf[0][r], buf[1][r], buf[2][r] }; //anti-pattern
-                    bool isidentical = Enumerable.SequenceEqual(currentpixel, previouspixel);
+                    //int[] currentpixel = new int[3] { buf[0][r], buf[1][r], buf[2][r] }; //anti-pattern
+                    //bool isidentical = Enumerable.SequenceEqual(currentpixel, previouspixel);
+                    bool isidentical = false;
+                    if (buf[0][r] == previouspixel[0] && buf[1][r] == previouspixel[1] && buf[2][r] == previouspixel[2])
+                    {
+                        isidentical = true;
+                    }
                     bool isdarkpixel = false;
                     if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
                     {
@@ -567,7 +572,7 @@ namespace pixels2points
                         List<double> potentialresult = new List<double>();
                         double distance = Convert.ToDouble(k);
                         //adding this for Lucas...
-                        if (pixlists.Count() > 4000)
+                        if (pixlists.Count() > 4000 && adjacencycount == 0)
                         {
                             pixlists = ReduceXYList(pixlists);
                         }
@@ -592,7 +597,7 @@ namespace pixels2points
                     if (adjacencycount == adjacencythreshold)
                     {
                         hasblackpx = true;
-                        if (previousrow == true)
+                        if (previousrow == true) //cuts down the # of false positives while preserving "actual" voids
                         {
                             for (int i = 0; i < adjacencythreshold; i++)
                             {
