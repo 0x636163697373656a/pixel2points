@@ -524,7 +524,7 @@ namespace pixels2points
             double x, y;    //Current lon and lat
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
-            int adjacencythreshold = 30;
+            int adjacencythreshold = 15;
             bool previousrow = false;
 
             for (int k = 0; k < Rows; k++)  //read one line
@@ -535,6 +535,7 @@ namespace pixels2points
                 buf[0] = new int[Cols];
                 buf[1] = new int[Cols];
                 buf[2] = new int[Cols];
+                int[] previouspixel = new int[3];
                 //ReadRaster parameters are StartCol, StartRow, ColumnsToRead, RowsToRead, BufferToStoreInto, BufferColumns, BufferRows, 0, 0
                 redband.ReadRaster(0, k, Cols, 1, buf[0], Cols, 1, 0, 0);
                 greenband.ReadRaster(0, k, Cols, 1, buf[1], Cols, 1, 0, 0);
@@ -543,22 +544,29 @@ namespace pixels2points
                 bool previous = false;
                 bool hasblackpx = false;
                 //iterate each item in one line
-                for (int r = 0; r < Cols; r ++)
+                for (int r = 0; r < Cols; r++)
                 {
+                    int[] currentpixel = new int[3] { buf[0][r], buf[1][r], buf[2][r] }; //anti-pattern
+                    bool isidentical = Enumerable.SequenceEqual(currentpixel, previouspixel);
+                    bool isdarkpixel = false;
+                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
+                    {
+                        isdarkpixel = true;
+                    }
                     //if we have reached this point then no additional coordinates will be found, so might as well avoid array accesses
                     if (r >= (Cols - adjacencythreshold) && adjacencycount < adjacencythreshold)
                     {
                         break;
                     }
-                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10 && previous == true)
+                    if ((isdarkpixel || isidentical) && previous == true)
                     {
-                        //only add pixels if they're clustered together
+                        //only add pixels if they're directly adjacent
                         //this way, you avoid all the errant little shadows that aren't actual data voids
                         //needs reworking
                         x = startX + r * interval;  //current lon                             
                         List<double> potentialresult = new List<double>();
                         double distance = Convert.ToDouble(k);
-                        //adding this because Lucas doesn't like making mask shapefile...
+                        //adding this for Lucas...
                         if (pixlists.Count() > 4000)
                         {
                             pixlists = ReduceXYList(pixlists);
@@ -576,7 +584,7 @@ namespace pixels2points
                     {
                         adjacencycount = 0;
                         previous = false;
-                        if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
+                        if (isdarkpixel || isidentical)
                         {
                             previous = true;
                         }
@@ -621,6 +629,9 @@ namespace pixels2points
                         }
                         adjacencycount = 0;
                     }
+                    previouspixel[0] = buf[0][r];
+                    previouspixel[1] = buf[1][r];
+                    previouspixel[2] = buf[2][r];
                 }
                 if (hasblackpx == true)
                 {
