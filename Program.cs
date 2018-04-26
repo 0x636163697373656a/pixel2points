@@ -524,7 +524,7 @@ namespace pixels2points
             double x, y;    //Current lon and lat
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
-            int adjacencythreshold = 15;
+            int adjacencythreshold = 30;
             bool previousrow = false;
 
             for (int k = 0; k < Rows; k++)  //read one line
@@ -633,10 +633,16 @@ namespace pixels2points
                             }
                         }
                         adjacencycount = 0;
+                        previouspixel[0] = 0;
+                        previouspixel[1] = 0;
+                        previouspixel[2] = 0;
                     }
-                    previouspixel[0] = buf[0][r];
-                    previouspixel[1] = buf[1][r];
-                    previouspixel[2] = buf[2][r];
+                    if (adjacencycount == 0)
+                    {
+                        previouspixel[0] = buf[0][r];
+                        previouspixel[1] = buf[1][r];
+                        previouspixel[2] = buf[2][r];
+                    }
                 }
                 if (hasblackpx == true)
                 {
@@ -758,7 +764,7 @@ namespace pixels2points
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
-                    if (distance > 3000)
+                    if (distance > 1000)
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
