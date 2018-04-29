@@ -484,7 +484,7 @@ namespace pixels2points
             int iter = 0;
             foreach (var result in toreduce)
             {
-                if (iter >= 1000)
+                if (iter <= 1000 || iter >= 3000)
                 {
                     reduced.Add(result);
                     iter = 0;
@@ -570,9 +570,10 @@ namespace pixels2points
                         //needs reworking
                         x = startX + r * interval;  //current lon                             
                         List<double> potentialresult = new List<double>();
-                        double distance = Convert.ToDouble(k);
+                        double ydistance = Convert.ToDouble(k);
+                        double xdistance = Convert.ToDouble(r);
                         //adding this for Lucas...
-                        if (pixlists.Count() > 4000 && adjacencycount == 0)
+                        if (pixlists.Count() > 4000)
                         {
                             pixlists = ReduceXYList(pixlists);
                         }
@@ -580,7 +581,8 @@ namespace pixels2points
                         {
                             potentialresult.Add(x);
                             potentialresult.Add(y);
-                            potentialresult.Add(distance);
+                            potentialresult.Add(ydistance);
+                            potentialresult.Add(xdistance);
                             pixlists.Add(potentialresult);
                         }
                         ++adjacencycount;
@@ -608,26 +610,26 @@ namespace pixels2points
                                 pixlists.Remove(pixlists[ndex]);
                                 double thisx = actualresult[0];
                                 double thisy = actualresult[1];
-                                double column = actualresult[2];
-                                string csvline = string.Format("{0},{1},{2},{3}{4}", thisx, thisy, column, filename, Environment.NewLine);
+                                double row = actualresult[2];
+                                double column = actualresult[3];
+                                string csvline = string.Format("{0},{1},{2},{3},{4}{5}", thisx, thisy, row, column, filename, Environment.NewLine);
                                 if (para == true)
                                 {
-                                    //trying something else because mask file is an imposition
                                     //ConcurrentBag.Count is O(1)
-                                    //if (ResultCoords.concurrentresults.Count > 600000)
-                                    //{
-                                    //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                    //    Environment.Exit(1);
-                                    //}
+                                    if (ResultCoords.concurrentresults.Count > 800000)
+                                    {
+                                        Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                        Environment.Exit(1);
+                                    }
                                     ResultCoords.concurrentresults.Add(csvline);
                                 }
                                 else
                                 {
-                                    //if (ResultCoords.results.Count > 600000)
-                                    //{
-                                    //    Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                    //    Environment.Exit(1);
-                                    //}
+                                    if (ResultCoords.results.Count > 800000)
+                                    {
+                                        Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                        Environment.Exit(1);
+                                    }
                                     ResultCoords.results.Add(csvline);
                                 }
                             }
@@ -759,12 +761,15 @@ namespace pixels2points
                     double y = Convert.ToDouble(point.Split(',')[1]);
                     int currw = Convert.ToInt32(point.Split(',')[2]);
                     int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
-                    int distance = nextrw - currw;
+                    int currcol = Convert.ToInt32(point.Split(',')[3]);
+                    int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
+                    int ydistance = nextrw - currw;
+                    int xdistance = nextcol - currcol;
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
-                    if (distance > 1000)
+                    if (ydistance > 1000 || xdistance > 1000 || xdistance < -1000)
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
