@@ -720,7 +720,7 @@ namespace pixels2points
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
                     //(800 * 30) / 100 = 240mx240m box, should be general enough
-                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && onsamerow && !samesequence))
+                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && (onsamerow && samesequence == false)))
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
