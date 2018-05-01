@@ -493,6 +493,7 @@ namespace pixels2points
                 bool previous = false;
                 bool hasblackpx = false;
                 bool existingsequence = false;
+                int sequencenumber = 0;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
@@ -567,8 +568,8 @@ namespace pixels2points
                             double lasty = lastresult[1];
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
-                            string firstline = string.Format("{0},{1},{2},{3},{4}{5}", firstx, firsty, firstrow, firstcolumn, filename, Environment.NewLine);
-                            string lastline = string.Format("{0},{1},{2},{3},{4}{5}", lastx, lasty, lastrow, lastcolumn, filename, Environment.NewLine);
+                            string firstline = string.Format("{0},{1},{2},{3},{4},{5}{6}", firstx, firsty, firstrow, firstcolumn, sequencenumber, filename, Environment.NewLine);
+                            string lastline = string.Format("{0},{1},{2},{3},{4},{5}{6}", lastx, lasty, lastrow, lastcolumn, sequencenumber, filename, Environment.NewLine);
                             //should not reach here, but just in case, don't want to hit OOM
                             if (ResultCoords.results.Count > 1200000)
                             {
@@ -578,6 +579,7 @@ namespace pixels2points
                             if (existingsequence == false) //another optimization
                             {
                                 ResultCoords.results.Add(firstline);
+                                sequencenumber += 1;
                             }
                             ResultCoords.results.Add(lastline);
                         }
@@ -610,7 +612,7 @@ namespace pixels2points
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
             var groupedlist = from l in querylist.Skip(1)
                               let x = l.Split(',')
-                              group l by x[4] into g
+                              group l by x[5] into g
                               select g.ToList();
             return groupedlist;
         }
@@ -706,15 +708,19 @@ namespace pixels2points
                     int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
                     int currcol = Convert.ToInt32(point.Split(',')[3]);
                     int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
+                    int currentsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
+                    int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
                     int ydistance = nextrw - currw;
                     int xdistance = nextcol - currcol;
                     bool onsamerow = (currw == nextrw) ? true : false;
+                    bool samesequence = (currentsequence == nextsequence) ? true : false;
                     //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
-                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && onsamerow))
+                    //(800 * 30) / 100 = 240mx240m box, should be general enough
+                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && onsamerow && !samesequence))
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
