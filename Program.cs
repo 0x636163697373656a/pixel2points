@@ -35,7 +35,6 @@ namespace pixels2points
             CreateConvexHullShp convexhull = new CreateConvexHullShp();
             GetSpatialReference getspatialref = new GetSpatialReference();
             GenerateMaskList maskinput = new GenerateMaskList();
-            bool IsParallel = false;
 
             argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
@@ -63,12 +62,18 @@ namespace pixels2points
                     case "-o":
                         outputfile = args[++x];
                         break;
-                    case "-para":
-                        IsParallel = true;
-                        break;
                     case "-m":
                         maskshpfile = args[++x];
                         break;
+                }
+            }
+            if (!String.IsNullOrEmpty(inputdirectory))
+            {
+                // get the file attributes for file or directory
+                FileAttributes attr = File.GetAttributes(inputdirectory);
+                if ((attr & FileAttributes.Directory) != FileAttributes.Directory)
+                {
+                    Console.WriteLine("    [-] Argument must be a directory");
                 }
             }
             if (!String.IsNullOrEmpty(outputfile))
@@ -147,24 +152,13 @@ namespace pixels2points
             spinner.Start();
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
-            //let's see if there's enough work being done to justify the added complexity
-            //(this is just a request to the task scheduler, it doesn't guarantee parallelism)
-            //most gdal objects are not thread-safe but with parallel foreach,
-            //each *iteration* of the method will have exactly one thread, so should be no gdal objects shared between threads
-            if (IsParallel == true)
+            int i = 0;
+            foreach (var result in searchresults)
             {
-                findpix.ParallelFindNoData(searchresults);
-            }
-            else
-            {
-                int i = 0;
-                foreach (var result in searchresults)
-                {
-                    Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
-                    Console.Write("    [+] {0} out of {1} files processed", i, searchresults.Count);
-                    findpix.FindNoDataXYCoords(result, false);
-                    i += 1;
-                }
+                Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
+                Console.Write("    [+] {0} out of {1} files processed", i, searchresults.Count);
+                findpix.FindNoDataXYCoords(result);
+                i += 1;
             }
             spinner.Stop();
             stopwatch.Stop();
@@ -172,21 +166,10 @@ namespace pixels2points
             Console.WriteLine("    [+] Finished processing. Processing time: {0:hh\\:mm\\:ss}", ts);
 
             //see if any results were actually returned
-            if (IsParallel == true)
+            if (!ResultCoords.results.Any())
             {
-                if (ResultCoords.concurrentresults.IsEmpty == true)
-                {
-                    Console.WriteLine("    [-] No data voids found! Nothing left to do.");
-                    return;
-                }
-            }
-            else
-            {
-                if (!ResultCoords.results.Any())
-                {
-                    Console.WriteLine("    [-] No data voids found! Nothing left to do.");
-                    return;
-                }
+                Console.WriteLine("    [-] No data voids found! Nothing left to do.");
+                return;
             }
 
             //write output to csv if output file arg was a *.csv
@@ -204,22 +187,10 @@ namespace pixels2points
                     }
                     Console.WriteLine("    [+] Successfully created file");
                     Console.WriteLine(">Writing results to {0}...", outputfile);
-                    if (IsParallel == true)
+                    foreach (var result in ResultCoords.results)
                     {
-                        foreach (var result in ResultCoords.concurrentresults)
-                        {
-                            byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                            csvfilestream.Write(datatowrite, 0, datatowrite.Length);
-                            ResultCoords.concurrentresults = null;
-                        }
-                    }
-                    else
-                    {
-                        foreach (var result in ResultCoords.results)
-                        {
-                            byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                            csvfilestream.Write(datatowrite, 0, datatowrite.Length);
-                        }
+                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
+                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
                     }
                     Console.WriteLine("    [+] Done!");
                 }
@@ -244,16 +215,7 @@ namespace pixels2points
                 }
                 Console.WriteLine("    [+] Got projection reference.");
                 Console.WriteLine(">Creating shapefile...");
-                if (IsParallel == true)
-                {
-                    List<string> coordslist = ResultCoords.concurrentresults.ToList();
-                    ResultCoords.concurrentresults = null;
-                    convexhull.CreateShapeFile(spatialref, coordslist, outputfile);
-                }
-                else
-                {
-                    convexhull.CreateShapeFile(spatialref, ResultCoords.results, outputfile);
-                }
+                convexhull.CreateShapeFile(spatialref, ResultCoords.results, outputfile);
                 Console.WriteLine("    [+] Done!");
             }
         }
@@ -436,10 +398,11 @@ namespace pixels2points
         }
     }
 
+    //I don't like this
+    //Output CSV reports per tile then merge into one shapefile instead?
     static class ResultCoords
     {
         public static List<string> results = new List<string>();
-        public static ConcurrentBag<string> concurrentresults = new ConcurrentBag<string>();
     }
 
     public class GetSpatialReference
@@ -461,30 +424,14 @@ namespace pixels2points
 
     public class FindNoDataPixels
     {
-        public void ParallelFindNoData(List<string> searchresults)
-        {
-            try
-            {
-                Parallel.ForEach(searchresults,
-                                new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount >> 1},
-                                (result) => 
-                                {
-                                    FindNoDataXYCoords(result, true);
-                                });
-            }
-            catch (AggregateException e)
-            {
-                Console.WriteLine("Parallel foreach has thrown an exception: {0}", e);
-            }
-        }
 
-        private List<List<double>> ReduceXYList(List<List<double>> toreduce)
+        private List<string> ReduceXYList(List<string> toreduce)
         {
-            List<List<double>> reduced = new List<List<double>>();
+            List<string> reduced = new List<string>();
             int iter = 0;
             foreach (var result in toreduce)
             {
-                if (iter <= 1000 || iter >= 3000)
+                if (iter >= 30)
                 {
                     reduced.Add(result);
                     iter = 0;
@@ -494,7 +441,7 @@ namespace pixels2points
             return reduced;
        }
 
-        public void FindNoDataXYCoords(string filepath, bool para)
+        public void FindNoDataXYCoords(string filepath)
         {
             //returns coordinates of points below a certain value, but only if N adjacent
             //nodes also fall below that value. the goal is to only identify anomalous clusters
@@ -503,14 +450,16 @@ namespace pixels2points
             if (ds == null)
             {
                 Console.WriteLine("    [-] Could not create raster dataset from file.");
-                return;
+                Environment.Exit(1);
             }
             if (ds.RasterCount < 3)
             {
                 Console.WriteLine("    [-] Need at least a three band raster image.");
+                Environment.Exit(1);
                 ds.Dispose();
-                return;
+                Environment.Exit(1);
             }
+            List<string> OutputCSV = new List<string>();
             double[] gt = new double[6];
             ds.GetGeoTransform(gt); //Read geo transform info into array
             int Rows = ds.RasterYSize;
@@ -543,17 +492,17 @@ namespace pixels2points
                 List<List<double>> pixlists = new List<List<double>>();
                 bool previous = false;
                 bool hasblackpx = false;
+                bool existingsequence = false;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
-                    //int[] currentpixel = new int[3] { buf[0][r], buf[1][r], buf[2][r] }; //anti-pattern
-                    //bool isidentical = Enumerable.SequenceEqual(currentpixel, previouspixel);
                     bool isidentical = false;
+                    bool isdarkpixel = false;
+
                     if (buf[0][r] == previouspixel[0] && buf[1][r] == previouspixel[1] && buf[2][r] == previouspixel[2])
                     {
                         isidentical = true;
                     }
-                    bool isdarkpixel = false;
                     if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
                     {
                         isdarkpixel = true;
@@ -572,11 +521,6 @@ namespace pixels2points
                         List<double> potentialresult = new List<double>();
                         double ydistance = Convert.ToDouble(k);
                         double xdistance = Convert.ToDouble(r);
-                        //adding this for Lucas...
-                        if (pixlists.Count() > 4000)
-                        {
-                            pixlists = ReduceXYList(pixlists);
-                        }
                         if (previousrow == true)
                         {
                             potentialresult.Add(x);
@@ -589,62 +533,61 @@ namespace pixels2points
                     }
                     else
                     {
+                        existingsequence = false;
                         adjacencycount = 0;
                         previous = false;
                         if (isdarkpixel || isidentical)
                         {
                             previous = true;
                         }
+                        pixlists.Clear();
+                    }
+                    if (adjacencycount == 0)
+                    {
+                        existingsequence = false;
+                        pixlists.Clear();
                     }
                     if (adjacencycount == adjacencythreshold)
                     {
                         hasblackpx = true;
                         if (previousrow == true) //cuts down the # of false positives while preserving "actual" voids
                         {
-                            for (int i = 0; i < adjacencythreshold; i++)
+                            if (existingsequence == true) //save array space by only preserving first/last points in a contiguous sequence
                             {
-                                //the enumerator for List<T> will go through elements in the order in which they were created,
-                                //so this will simply take the most recently added element and add it to results
-                                int ndex = pixlists.Count() - 1;
-                                List<double> actualresult = pixlists[ndex];
-                                pixlists.Remove(pixlists[ndex]);
-                                double thisx = actualresult[0];
-                                double thisy = actualresult[1];
-                                double row = actualresult[2];
-                                double column = actualresult[3];
-                                string csvline = string.Format("{0},{1},{2},{3},{4}{5}", thisx, thisy, row, column, filename, Environment.NewLine);
-                                if (para == true)
-                                {
-                                    //ConcurrentBag.Count is O(1)
-                                    if (ResultCoords.concurrentresults.Count > 800000)
-                                    {
-                                        Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                        Environment.Exit(1);
-                                    }
-                                    ResultCoords.concurrentresults.Add(csvline);
-                                }
-                                else
-                                {
-                                    if (ResultCoords.results.Count > 800000)
-                                    {
-                                        Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                        Environment.Exit(1);
-                                    }
-                                    ResultCoords.results.Add(csvline);
-                                }
+                                //wish C# had something like pop_back()...
+                                ResultCoords.results.RemoveAt(ResultCoords.results.Count - 1);
                             }
+                            List<double> firstresult = pixlists.First();
+                            List<double> lastresult = pixlists.Last();
+                            double firstx = firstresult[0];
+                            double firsty = firstresult[1];
+                            double firstrow = firstresult[2];
+                            double firstcolumn = firstresult[3];
+                            double lastx = lastresult[0];
+                            double lasty = lastresult[1];
+                            double lastrow = lastresult[2];
+                            double lastcolumn = lastresult[3];
+                            string firstline = string.Format("{0},{1},{2},{3},{4}{5}", firstx, firsty, firstrow, firstcolumn, filename, Environment.NewLine);
+                            string lastline = string.Format("{0},{1},{2},{3},{4}{5}", lastx, lasty, lastrow, lastcolumn, filename, Environment.NewLine);
+                            //should not reach here, but just in case, don't want to hit OOM
+                            if (ResultCoords.results.Count > 1200000)
+                            {
+                                Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                Environment.Exit(1);
+                            }
+                            if (existingsequence == false) //another optimization
+                            {
+                                ResultCoords.results.Add(firstline);
+                            }
+                            ResultCoords.results.Add(lastline);
                         }
+                        pixlists.Clear();
                         adjacencycount = 0;
-                        previouspixel[0] = 0;
-                        previouspixel[1] = 0;
-                        previouspixel[2] = 0;
+                        existingsequence = true;
                     }
-                    if (adjacencycount == 0)
-                    {
-                        previouspixel[0] = buf[0][r];
-                        previouspixel[1] = buf[1][r];
-                        previouspixel[2] = buf[2][r];
-                    }
+                    previouspixel[0] = buf[0][r];
+                    previouspixel[1] = buf[1][r];
+                    previouspixel[2] = buf[2][r];
                 }
                 if (hasblackpx == true)
                 {
@@ -667,7 +610,7 @@ namespace pixels2points
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
             var groupedlist = from l in querylist.Skip(1)
                               let x = l.Split(',')
-                              group l by x[3] into g
+                              group l by x[4] into g
                               select g.ToList();
             return groupedlist;
         }
@@ -765,11 +708,13 @@ namespace pixels2points
                     int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
                     int ydistance = nextrw - currw;
                     int xdistance = nextcol - currcol;
+                    bool onsamerow = (currw == nextrw) ? true : false;
+                    //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
                     ++iter;
-                    if (ydistance > 1000 || xdistance > 1000 || xdistance < -1000)
+                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && onsamerow))
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
