@@ -91,7 +91,7 @@ namespace pixels2points
             }
             if (!String.IsNullOrEmpty(maskshpfile))
             {
-                if (!(Path.GetExtension(outputfile) == ".shp"))
+                if (!(Path.GetExtension(maskshpfile) == ".shp"))
                 {
                     Console.WriteLine("    [-] Argument must be a .shp file.");
                     return;
@@ -425,21 +425,15 @@ namespace pixels2points
     public class FindNoDataPixels
     {
 
-        private List<string> ReduceXYList(List<string> toreduce)
+        private void ReduceXYList()
         {
-            List<string> reduced = new List<string>();
-            int iter = 0;
-            foreach (var result in toreduce)
+            int pos = 0;
+            for (int i = 0; i < ResultCoords.results.Count; i += 2, pos++)
             {
-                if (iter >= 30)
-                {
-                    reduced.Add(result);
-                    iter = 0;
-                }
-                iter += 1;
+                ResultCoords.results[pos] = ResultCoords.results[i];
             }
-            return reduced;
-       }
+            ResultCoords.results.RemoveRange(pos, ResultCoords.results.Count - pos);
+        }
 
         public void FindNoDataXYCoords(string filepath)
         {
@@ -473,7 +467,7 @@ namespace pixels2points
             double x, y;    //Current lon and lat
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
-            int adjacencythreshold = 30;
+            int adjacencythreshold = 15;
             bool previousrow = false;
 
             for (int k = 0; k < Rows; k++)  //read one line
@@ -493,6 +487,7 @@ namespace pixels2points
                 bool previous = false;
                 bool hasblackpx = false;
                 bool existingsequence = false;
+                int firstinrow = 1;
                 int sequencenumber = 0;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
@@ -504,7 +499,7 @@ namespace pixels2points
                     {
                         isidentical = true;
                     }
-                    if (buf[0][r] <= 10 && buf[1][r] <= 10 && buf[2][r] <= 10)
+                    if (buf[0][r] <= 15 && buf[1][r] <= 15 && buf[2][r] <= 15)
                     {
                         isdarkpixel = true;
                     }
@@ -568,13 +563,15 @@ namespace pixels2points
                             double lasty = lastresult[1];
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
-                            string firstline = string.Format("{0},{1},{2},{3},{4},{5}{6}", firstx, firsty, firstrow, firstcolumn, sequencenumber, filename, Environment.NewLine);
-                            string lastline = string.Format("{0},{1},{2},{3},{4},{5}{6}", lastx, lasty, lastrow, lastcolumn, sequencenumber, filename, Environment.NewLine);
-                            //should not reach here, but just in case, don't want to hit OOM
-                            if (ResultCoords.results.Count > 1200000)
+                            string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
+                            string lastline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", lastx, lasty, lastrow, lastcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
+                            //just in case, don't want to hit OOM
+                            //need to implement stored procedure to allow for shoreline tile inclusion without needing to output individual tiles
+                            if (ResultCoords.results.Count > 800000)
                             {
                                 Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                Environment.Exit(1);
+                                Console.WriteLine("Reducing results size, may skew results");
+                                ReduceXYList();
                             }
                             if (existingsequence == false) //another optimization
                             {
@@ -582,6 +579,10 @@ namespace pixels2points
                                 sequencenumber += 1;
                             }
                             ResultCoords.results.Add(lastline);
+                        }
+                        if (existingsequence == false && firstinrow == 1)
+                        {
+                            firstinrow = 0;
                         }
                         pixlists.Clear();
                         adjacencycount = 0;
@@ -612,7 +613,7 @@ namespace pixels2points
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
             var groupedlist = from l in querylist.Skip(1)
                               let x = l.Split(',')
-                              group l by x[5] into g
+                              group l by x[6] into g
                               select g.ToList();
             return groupedlist;
         }
@@ -635,12 +636,10 @@ namespace pixels2points
                 Console.WriteLine("    [-] Failed to create feature in shapefile.");
                 newfeature.Dispose();
                 newgeom.Dispose();
-                hullgeom.Dispose();
                 return;
             }
             newfeature.Dispose();
             newgeom.Dispose();
-            hullgeom.Dispose();
         }
 
         public void CreateShapeFile(string projref, List<string> xycoords, string shapefilepath)
@@ -710,6 +709,7 @@ namespace pixels2points
                     int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
                     int currentsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
                     int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
+                    int nextisfirst = Convert.ToInt32(nextpoint.Split(',')[5]);
                     int ydistance = nextrw - currw;
                     int xdistance = nextcol - currcol;
                     bool onsamerow = (currw == nextrw) ? true : false;
@@ -718,9 +718,10 @@ namespace pixels2points
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                     newpoint.SetPoint(0, x, y, 0);
                     clustergeom.AddGeometry(newpoint);
+                    //CreateFeature(newlayer, layername, clustergeom);
                     ++iter;
-                    //(800 * 30) / 100 = 240mx240m box, should be general enough
-                    if (ydistance > 800 || ((xdistance > 800 || xdistance < -800) && (onsamerow && samesequence == false)))
+                    //(800 * 30) / 100 = 240m
+                    if (ydistance > 700 | ((xdistance > 700 | xdistance < -700) && (nextisfirst != 1) && !samesequence))
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
@@ -728,7 +729,7 @@ namespace pixels2points
                         clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                     }
                 }
-                if (!clustergeom.IsEmpty() && iter > 20)
+                if (!clustergeom.IsEmpty() && iter > 0)
                 {
                     CreateFeature(newlayer, layername, clustergeom);
                 }
