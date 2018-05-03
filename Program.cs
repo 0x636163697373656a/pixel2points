@@ -198,13 +198,13 @@ namespace pixels2points
                 if (csvfilestream != null)
                 {
                     csvfilestream.Dispose();
-                }                
+                }
                 return;
             }
 
             //write output to shapefile if output file arg was *.shp
             //shp will contain multipoint features, one for each tiff
-            if (Path.GetExtension(outputfile) == ".shp" )
+            if (Path.GetExtension(outputfile) == ".shp")
             {
                 Console.WriteLine(">Retrieving Projection Reference...");
                 string spatialref = getspatialref.GetSpatialReferenceFromPath(searchresults.First());
@@ -345,7 +345,7 @@ namespace pixels2points
         public FileStream CheckandCreateCSV(string filepath)
         {
             FileStream fs = null;
-            string csvfields = "X,Y,TileName\r\n";
+            string csvfields = "X,Y,Row,Column,Weight,Startposition,TileName\r\n";
             if (!File.Exists(filepath))
             {
                 if (Path.GetExtension(filepath) != ".csv")
@@ -564,6 +564,10 @@ namespace pixels2points
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
                             string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
+                            if (existingsequence == false && firstinrow == 1)
+                            {
+                                firstinrow = 0;
+                            }
                             string lastline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", lastx, lasty, lastrow, lastcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
                             //just in case, don't want to hit OOM
                             //need to implement stored procedure to allow for shoreline tile inclusion without needing to output individual tiles
@@ -580,10 +584,7 @@ namespace pixels2points
                             }
                             ResultCoords.results.Add(lastline);
                         }
-                        if (existingsequence == false && firstinrow == 1)
-                        {
-                            firstinrow = 0;
-                        }
+
                         pixlists.Clear();
                         adjacencycount = 0;
                         existingsequence = true;
@@ -707,12 +708,11 @@ namespace pixels2points
                     int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
                     int currcol = Convert.ToInt32(point.Split(',')[3]);
                     int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
-                    int currentsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
-                    int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
+                    int currentsequence = Convert.ToInt32(nextpoint.Split(',')[4]) + currw;
+                    int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]) + nextrw;
                     int nextisfirst = Convert.ToInt32(nextpoint.Split(',')[5]);
                     int ydistance = nextrw - currw;
                     int xdistance = nextcol - currcol;
-                    bool onsamerow = (currw == nextrw) ? true : false;
                     bool samesequence = (currentsequence == nextsequence) ? true : false;
                     //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
                     Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
@@ -721,7 +721,7 @@ namespace pixels2points
                     //CreateFeature(newlayer, layername, clustergeom);
                     ++iter;
                     //(800 * 30) / 100 = 240m
-                    if (ydistance > 700 | ((xdistance > 700 | xdistance < -700) && (nextisfirst != 1) && !samesequence))
+                    if (ydistance > 400 | ((xdistance > 400 | xdistance < -400) && (nextisfirst != 1) && !samesequence))
                     {
                         iter = 0;
                         CreateFeature(newlayer, layername, clustergeom);
