@@ -1,5 +1,6 @@
 using System;
 using System.Security;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -29,7 +30,6 @@ namespace pixels2points
             List<string> searchresults;
             List<string> masktilenames;
             List<string> maskresults;
-            System.IO.FileStream csvfilestream;
             HandleFileInput fileops = new HandleFileInput();
             FindNoDataPixels findpix = new FindNoDataPixels();
             CreateConvexHullShp convexhull = new CreateConvexHullShp();
@@ -38,7 +38,7 @@ namespace pixels2points
 
             argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
-            argshelp = String.Concat(argshelp, "-o\t\t\toutput file (.csv or .shp format)\r\n");
+            argshelp = String.Concat(argshelp, "-o\t\t\toutput file (.shp format)\r\n");
             argshelp = String.Concat(argshelp, "Optional Arguments:\r\n");
             argshelp = String.Concat(argshelp, "-m\t\t\tmask shapefile to limit which tiffs are processed");
             //make sure program has been provided the correct args
@@ -74,13 +74,14 @@ namespace pixels2points
                 if ((attr & FileAttributes.Directory) != FileAttributes.Directory)
                 {
                     Console.WriteLine("    [-] Argument must be a directory");
+                    return;
                 }
             }
             if (!String.IsNullOrEmpty(outputfile))
             {
-                if (!(Path.GetExtension(outputfile) == ".shp" | Path.GetExtension(outputfile) == ".csv"))
+                if (!(Path.GetExtension(outputfile) == ".shp"))
                 {
-                    Console.WriteLine("    [-] Argument must be a .shp or .csv file.");
+                    Console.WriteLine("    [-] Argument must be a .shp file.");
                     return;
                 }
                 if (File.Exists(outputfile))
@@ -104,9 +105,7 @@ namespace pixels2points
             }
 
             //register gdal/ogr drivers
-            Console.WriteLine(">Registering GDAL Drivers...");
             GdalConfiguration.ConfigureGdal();
-            Console.WriteLine(">Registering OGR Drivers...");
             GdalConfiguration.ConfigureOgr();
 
             //find all tif files in directory from args
@@ -146,6 +145,13 @@ namespace pixels2points
 
             //find the coordinates of all pixels that are likely to be data voids
             Console.WriteLine(">Parsing tiffs for black pixels...    ");
+            string outputdir = Path.GetDirectoryName(outputfile);
+            string csvdirectory = fileops.CreateCSVDirectory(outputdir);
+            if (String.IsNullOrEmpty(csvdirectory))
+            {
+                Console.WriteLine("    [-] Do not have permission to create output files. Exiting.");
+                return;
+            }
             row = Console.CursorTop - 1;
             col = Console.CursorLeft + 35;
             var spinner = new Spinner(col, row);
@@ -157,7 +163,7 @@ namespace pixels2points
             {
                 Console.SetCursorPosition((Console.CursorLeft), (Console.CursorTop));
                 Console.Write("    [+] {0} out of {1} files processed", i, searchresults.Count);
-                findpix.FindNoDataXYCoords(result);
+                findpix.FindNoDataXYCoords(result, csvdirectory);
                 i += 1;
             }
             spinner.Stop();
@@ -166,58 +172,35 @@ namespace pixels2points
             Console.WriteLine("    [+] Finished processing. Processing time: {0:hh\\:mm\\:ss}", ts);
 
             //see if any results were actually returned
-            if (!ResultCoords.results.Any())
+            if (!ResultCoords.csvfiles.Any())
             {
                 Console.WriteLine("    [-] No data voids found! Nothing left to do.");
                 return;
             }
 
-            //write output to csv if output file arg was a *.csv
-            if (Path.GetExtension(outputfile) == ".csv")
+            //write output to shapefile
+            //shp will contain multipoint features, one for each tiff
+            Console.WriteLine(">Retrieving Projection Reference...");
+            string spatialref = getspatialref.GetSpatialReferenceFromPath(searchresults.First());
+            if (spatialref == null)
             {
-                Console.WriteLine(">Creating {0}...", outputfile);
-                //crossing streams...
-                //it's okay as long as caller remembers to wrap it in using() { }
-                using (csvfilestream = fileops.CheckandCreateCSV(outputfile))
-                {
-                    if (csvfilestream == null)
-                    {
-                        Console.WriteLine("    [-] Could not create file for editing. Exiting");
-                        return;
-                    }
-                    Console.WriteLine("    [+] Successfully created file");
-                    Console.WriteLine(">Writing results to {0}...", outputfile);
-                    foreach (var result in ResultCoords.results)
-                    {
-                        byte[] datatowrite = new UTF8Encoding(true).GetBytes(result);
-                        csvfilestream.Write(datatowrite, 0, datatowrite.Length);
-                    }
-                    Console.WriteLine("    [+] Done!");
-                }
-                // in case the file stream is still open
-                if (csvfilestream != null)
-                {
-                    csvfilestream.Dispose();
-                }
+                Console.WriteLine("    [-] Could not retrieve projection reference. Exiting.");
                 return;
             }
+            Console.WriteLine("    [+] Got projection reference.");
+            Console.WriteLine(">Creating shapefile...");
+            convexhull.CreateShapeFile(spatialref, outputfile);
 
-            //write output to shapefile if output file arg was *.shp
-            //shp will contain multipoint features, one for each tiff
-            if (Path.GetExtension(outputfile) == ".shp")
+            Console.WriteLine(">Cleaning Up...");
+            try
             {
-                Console.WriteLine(">Retrieving Projection Reference...");
-                string spatialref = getspatialref.GetSpatialReferenceFromPath(searchresults.First());
-                if (spatialref == null)
-                {
-                    Console.WriteLine("    [-] Could not retrieve projection reference. Exiting.");
-                    return;
-                }
-                Console.WriteLine("    [+] Got projection reference.");
-                Console.WriteLine(">Creating shapefile...");
-                convexhull.CreateShapeFile(spatialref, ResultCoords.results, outputfile);
-                Console.WriteLine("    [+] Done!");
+                Directory.Delete(csvdirectory, true);
             }
+            catch (Exception)
+            {
+                Console.WriteLine("    [-] Could not delete temp data.");
+            }
+            Console.WriteLine("    [+] Done!");
         }
     }
 
@@ -301,6 +284,33 @@ namespace pixels2points
                 Console.WriteLine("    [-]Path exceeds maximum length. Please specify a valid path.");
             }
             return inputdirinfo;
+        }
+
+        public string CreateCSVDirectory(string inputdir)
+        {
+            DirectoryInfo inputdirinfo = ValidateInputDir(inputdir);
+            if (inputdirinfo == null)
+            {
+                Console.WriteLine("    [-] Invalid directory provided. Nothing left to do");
+            }
+            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
+            {
+                byte[] randomnumber = new byte[8];
+                rng.GetBytes(randomnumber);
+                string randomstring = BitConverter.ToString(randomnumber);
+                string directoryname = (Regex.Replace(randomstring, @"\-", "")).ToLower();
+                string returnvalue = "";
+                try
+                {
+                    DirectoryInfo subdir = inputdirinfo.CreateSubdirectory(directoryname);
+                    returnvalue = subdir.ToString();
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("    [-] Could not create directory. Exiting.");
+                }
+                return returnvalue;
+            }
         }
 
         public List<string> GetTifFilePathsFromDirectory(string inputdir)
@@ -396,13 +406,23 @@ namespace pixels2points
             }
             return fs;
         }
+
+        public static IEnumerable<string> ReadFromCSV(string filename)
+        {
+            string line;
+            using (var reader = File.OpenText(filename))
+            {
+                while((line = reader.ReadLine()) != null)
+                {
+                    yield return line;
+                }
+            }
+        }
     }
 
-    //I don't like this
-    //Output CSV reports per tile then merge into one shapefile instead?
     static class ResultCoords
     {
-        public static List<string> results = new List<string>();
+        public static List<string> csvfiles = new List<string>();
     }
 
     public class GetSpatialReference
@@ -424,18 +444,62 @@ namespace pixels2points
 
     public class FindNoDataPixels
     {
-
-        private void ReduceXYList()
+        private void ReduceXYList(List<string> xylist)
         {
             int pos = 0;
-            for (int i = 0; i < ResultCoords.results.Count; i += 2, pos++)
+            for (int i = 0; i < xylist.Count; i += 2, pos++)
             {
-                ResultCoords.results[pos] = ResultCoords.results[i];
+                xylist[pos] = xylist[i];
             }
-            ResultCoords.results.RemoveRange(pos, ResultCoords.results.Count - pos);
+            xylist.RemoveRange(pos, xylist.Count - pos);
         }
 
-        public void FindNoDataXYCoords(string filepath)
+        private int CheckExistingNodesDistance(List<string> PreviousRowXY, int runningsequence, double currx, double curry)
+        {
+            int sequencenumber = runningsequence;
+            foreach(string point in PreviousRowXY)
+            {
+                double prevx = Convert.ToDouble(point.Split(',')[0]);
+                double prevy = Convert.ToDouble(point.Split(',')[1]);
+                int prevsequence = Convert.ToInt32(point.Split(',')[4]);
+                //((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)) < d*d
+                if (((currx - prevx) * (currx - prevx) + (curry - prevy) * (curry - prevy)) < 800 * 800)
+                {
+                    sequencenumber = prevsequence;
+                    return sequencenumber;
+                }
+            }
+            return sequencenumber;
+        }
+
+        private void WritePointData(string outputfile, List<string> points)
+        {
+            HandleFileInput fileops = new HandleFileInput();
+            System.IO.FileStream csvfilestream;
+            //crossing streams...
+            //it's okay as long as caller remembers to wrap it in using() { }
+            using (csvfilestream = fileops.CheckandCreateCSV(outputfile))
+            {
+                if (csvfilestream == null)
+                {
+                    Console.WriteLine("    [-] Could not create file for editing. Exiting");
+                    return;
+                }
+                foreach (var point in points)
+                {
+                    byte[] datatowrite = new UTF8Encoding(true).GetBytes(point);
+                    csvfilestream.Write(datatowrite, 0, datatowrite.Length);
+                }
+            }
+            // in case the file stream is still open
+            if (csvfilestream != null)
+            {
+                csvfilestream.Dispose();
+            }
+            return;
+        }
+
+        public void FindNoDataXYCoords(string filepath, string outputdir)
         {
             //returns coordinates of points below a certain value, but only if N adjacent
             //nodes also fall below that value. the goal is to only identify anomalous clusters
@@ -454,6 +518,8 @@ namespace pixels2points
                 Environment.Exit(1);
             }
             List<string> OutputCSV = new List<string>();
+            List<string> PreviousRowXY = new List<string>();
+            int runningsequence = 0;
             double[] gt = new double[6];
             ds.GetGeoTransform(gt); //Read geo transform info into array
             int Rows = ds.RasterYSize;
@@ -469,6 +535,8 @@ namespace pixels2points
             int adjacencycount = 0;
             int adjacencythreshold = 15;
             bool previousrow = false;
+            bool isinvalid = false;
+            int pointsoverflow = 0;
 
             for (int k = 0; k < Rows; k++)  //read one line
             {
@@ -480,15 +548,28 @@ namespace pixels2points
                 buf[2] = new int[Cols];
                 int[] previouspixel = new int[3];
                 //ReadRaster parameters are StartCol, StartRow, ColumnsToRead, RowsToRead, BufferToStoreInto, BufferColumns, BufferRows, 0, 0
-                redband.ReadRaster(0, k, Cols, 1, buf[0], Cols, 1, 0, 0);
-                greenband.ReadRaster(0, k, Cols, 1, buf[1], Cols, 1, 0, 0);
-                blueband.ReadRaster(0, k, Cols, 1, buf[2], Cols, 1, 0, 0);
+                try
+                {
+                    redband.ReadRaster(0, k, Cols, 1, buf[0], Cols, 1, 0, 0);
+                    greenband.ReadRaster(0, k, Cols, 1, buf[1], Cols, 1, 0, 0);
+                    blueband.ReadRaster(0, k, Cols, 1, buf[2], Cols, 1, 0, 0);
+                }
+                catch
+                {
+                    if (isinvalid == false)
+                    {
+                        Console.WriteLine("Invalid compression result. Please rerun ImageChecker");
+                        isinvalid = true;
+                    }
+                    continue;
+                }
                 List<List<double>> pixlists = new List<List<double>>();
                 bool previous = false;
                 bool hasblackpx = false;
                 bool existingsequence = false;
                 int firstinrow = 1;
                 int sequencenumber = 0;
+                int resultsindex = 0;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
@@ -551,7 +632,7 @@ namespace pixels2points
                             if (existingsequence == true) //save array space by only preserving first/last points in a contiguous sequence
                             {
                                 //wish C# had something like pop_back()...
-                                ResultCoords.results.RemoveAt(ResultCoords.results.Count - 1);
+                                OutputCSV.RemoveAt(OutputCSV.Count - 1);
                             }
                             List<double> firstresult = pixlists.First();
                             List<double> lastresult = pixlists.Last();
@@ -563,26 +644,46 @@ namespace pixels2points
                             double lasty = lastresult[1];
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
+                            sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, firstx, firsty);
                             string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
+                            //just in case, don't want to hit OOM
+                            if (OutputCSV.Count > 600000)
+                            {
+                                Console.WriteLine("[-] Found a lot of valid BlackPx. Please consider using -m to mask out shoreline tiles");
+                                string overflowfile = outputdir + "\\" + filename + "_" + pointsoverflow.ToString() + ".csv";
+                                WritePointData(overflowfile, OutputCSV);
+                                ResultCoords.csvfiles.Add(overflowfile);
+                                pointsoverflow += 1;
+                                OutputCSV.Clear();
+                            }
+                            if (runningsequence == Int32.MaxValue)
+                            {
+                                Console.WriteLine("[-] Found too many unique patterns. Please consider using -m to mask out shoreline tiles");
+                                Console.WriteLine("    Reducing results size, may skew results");
+                                ReduceXYList(OutputCSV);
+                            }
+                            if (existingsequence == false) //another optimization
+                            {
+                                //ResultCoords.results.Add(firstline);
+                                PreviousRowXY.Add(firstline);
+                                OutputCSV.Add(firstline);
+                                //sequencenumber += 1;
+                                runningsequence += 1;
+                                if (firstinrow == 0)
+                                {
+                                    resultsindex += 1;
+                                }
+                            }
                             if (existingsequence == false && firstinrow == 1)
                             {
                                 firstinrow = 0;
                             }
+                            sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, lastx, lasty);
                             string lastline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", lastx, lasty, lastrow, lastcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
-                            //just in case, don't want to hit OOM
-                            //need to implement stored procedure to allow for shoreline tile inclusion without needing to output individual tiles
-                            if (ResultCoords.results.Count > 800000)
-                            {
-                                Console.WriteLine("[-] Found too many valid BlackPx. Please consider using -m to mask out shoreline tiles");
-                                Console.WriteLine("Reducing results size, may skew results");
-                                ReduceXYList();
-                            }
-                            if (existingsequence == false) //another optimization
-                            {
-                                ResultCoords.results.Add(firstline);
-                                sequencenumber += 1;
-                            }
-                            ResultCoords.results.Add(lastline);
+                            //ResultCoords.results.Add(lastline);
+                            OutputCSV.Add(lastline);
+                            PreviousRowXY.Add(lastline);
+                            resultsindex += 1;
                         }
 
                         pixlists.Clear();
@@ -601,29 +702,35 @@ namespace pixels2points
                 {
                     previousrow = false;
                 }
+                PreviousRowXY.RemoveRange(0, (PreviousRowXY.Count - resultsindex));
             }
+            string outputfile = outputdir + "\\" + filename + ".csv";
+            WritePointData(outputfile, OutputCSV);
+            ResultCoords.csvfiles.Add(outputfile);
             ds.Dispose();
         }
     }
 
     public class CreateConvexHullShp
     {
-        private IEnumerable<List<string>> ReturnClusterCoords(List<string> querylist)
+        private IEnumerable<List<string>> ReturnClusterCoords(string filepath)
         {
+            HandleFileInput fileinput = new HandleFileInput(); 
             //more LINQ weirdness
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
-            var groupedlist = from l in querylist.Skip(1)
+            var groupedlist = from l in HandleFileInput.ReadFromCSV(filepath).Skip(1)
                               let x = l.Split(',')
                               group l by x[6] into g
                               select g.ToList();
             return groupedlist;
         }
 
-        private void CreateFeature(Layer featurelayer, string layername, Geometry newgeom)
+        private void CreateFeature(Layer featurelayer, string layername, Geometry newgeom, int currentsequence)
         {
             //set "TileName" to last comma-separated element in sublist (the tile name...)
             Feature newfeature = new Feature(featurelayer.GetLayerDefn());
             newfeature.SetField("TileName", layername);
+            newfeature.SetField("ClusterID", currentsequence);
             Geometry hullgeom = newgeom.ConvexHull();
             // ConvexHull() can return multiple types (ughh), left up to caller to handle this
             //easiest way to "convert" a linestring to polygon
@@ -643,7 +750,7 @@ namespace pixels2points
             newgeom.Dispose();
         }
 
-        public void CreateShapeFile(string projref, List<string> xycoords, string shapefilepath)
+        public void CreateShapeFile(string projref, string shapefilepath)
         {
             //creates a shapefile with a separate geometry feature for each tile in the results list
             string drivertype = "ESRI Shapefile";
@@ -655,9 +762,9 @@ namespace pixels2points
             }
             SpatialReference spatialref = new SpatialReference(projref);
             //a list of lists, each represent a separate tile name
-            IEnumerable<List<string>> coordsbycluster = ReturnClusterCoords(xycoords);
             //create new datasource
-            DataSource shapefileds = shpdriver.CreateDataSource(Path.GetDirectoryName(shapefilepath), new string[] { });
+            //DataSource shapefileds = shpdriver.CreateDataSource(Path.GetDirectoryName(shapefilepath), new string[] { });
+            DataSource shapefileds = shpdriver.CreateDataSource(shapefilepath, new string[] { });
             if (shapefileds == null)
             {
                 Console.WriteLine("    [-] Couldn't create shapefile datasource.");
@@ -665,6 +772,7 @@ namespace pixels2points
             }
             //new field to add the tile name to
             FieldDefn newfield = new FieldDefn("TileName", FieldType.OFTString);
+            FieldDefn clusterid = new FieldDefn("ClusterID", FieldType.OFTInteger);
             string fname = Path.GetFileName(shapefilepath);
             //create new layer to add features to
             Layer newlayer = shapefileds.CreateLayer(Path.ChangeExtension(fname, null), spatialref, wkbGeometryType.wkbPolygon, new string[] { });
@@ -682,56 +790,67 @@ namespace pixels2points
                 newfield.Dispose();
                 return;
             }
-            foreach (var cluster in coordsbycluster)
+            if (newlayer.CreateField(clusterid, 1) != Ogr.OGRERR_NONE)
             {
-                //List<string> cluster = clusterlist.OrderBy(x => Convert.ToInt32(x.Split(',')[2])).ToList();
-                //create new point geometry for every element in each list
-                Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
-                clustergeom.AssignSpatialReference(spatialref);
-                string layername = (cluster.First()).Split(',').Last();
-                int iter = 0;
-                for (int i = 0; i < (cluster.Count()); i++)
+                Console.WriteLine("    [-] Creating ClusterID field failed.");
+                shapefileds.Dispose();
+                newfield.Dispose();
+                return;
+            }
+            foreach (string csvfile in ResultCoords.csvfiles)
+            {
+                IEnumerable<List<string>> coordsbytile = ReturnClusterCoords(csvfile);
+                foreach (var tile in coordsbytile)
                 {
-                    string point = cluster[i];
-                    string nextpoint;
-                    if (!(i == cluster.Count() - 1))
+                    tile.Sort((x, y) => (Convert.ToInt32(x.Split(',')[4]).CompareTo(Convert.ToInt32(y.Split(',')[4]))));
+                    //List<string> cluster = clusterlist.OrderBy(x => Convert.ToInt32(x.Split(',')[2])).ToList();
+                    //create new point geometry for every element in each list
+                    Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
+                    clustergeom.AssignSpatialReference(spatialref);
+                    string layername = (tile.First()).Split(',').Last();
+                    int iter = 0;
+                    int currentsequence = 0;
+                    for (int i = 0; i < (tile.Count()); i++)
                     {
-                        nextpoint = cluster[i + 1];
+                        string point = tile[i];
+                        string nextpoint;
+                        if (!(i == tile.Count() - 1))
+                        {
+                            nextpoint = tile[i + 1];
+                        }
+                        else
+                        {
+                            nextpoint = point;
+                        }
+                        double x = Convert.ToDouble(point.Split(',')[0]);
+                        double y = Convert.ToDouble(point.Split(',')[1]);
+                        int currw = Convert.ToInt32(point.Split(',')[2]);
+                        int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
+                        int currcol = Convert.ToInt32(point.Split(',')[3]);
+                        int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
+                        currentsequence = Convert.ToInt32(point.Split(',')[4]);
+                        int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]);
+                        int ydistance = nextrw - currw;
+                        int xdistance = nextcol - currcol;
+                        bool samesequence = (currentsequence == nextsequence) ? true : false;
+                        //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
+                        Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
+                        newpoint.SetPoint(0, x, y, 0);
+                        clustergeom.AddGeometry(newpoint);
+                        //CreateFeature(newlayer, layername, clustergeom);
+                        ++iter;
+                        if (!samesequence && (ydistance > 100 | (xdistance > 100 | xdistance < -100)))
+                        {
+                            iter = 0;
+                            CreateFeature(newlayer, layername, clustergeom, currentsequence);
+                            clustergeom = null;
+                            clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
+                        }
                     }
-                    else
+                    if (!clustergeom.IsEmpty() && iter > 0)
                     {
-                        nextpoint = point;
+                        CreateFeature(newlayer, layername, clustergeom, currentsequence);
                     }
-                    double x = Convert.ToDouble(point.Split(',')[0]);
-                    double y = Convert.ToDouble(point.Split(',')[1]);
-                    int currw = Convert.ToInt32(point.Split(',')[2]);
-                    int nextrw = Convert.ToInt32(nextpoint.Split(',')[2]);
-                    int currcol = Convert.ToInt32(point.Split(',')[3]);
-                    int nextcol = Convert.ToInt32(nextpoint.Split(',')[3]);
-                    int currentsequence = Convert.ToInt32(nextpoint.Split(',')[4]) + currw;
-                    int nextsequence = Convert.ToInt32(nextpoint.Split(',')[4]) + nextrw;
-                    int nextisfirst = Convert.ToInt32(nextpoint.Split(',')[5]);
-                    int ydistance = nextrw - currw;
-                    int xdistance = nextcol - currcol;
-                    bool samesequence = (currentsequence == nextsequence) ? true : false;
-                    //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
-                    Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
-                    newpoint.SetPoint(0, x, y, 0);
-                    clustergeom.AddGeometry(newpoint);
-                    //CreateFeature(newlayer, layername, clustergeom);
-                    ++iter;
-                    //(800 * 30) / 100 = 240m
-                    if (ydistance > 400 | ((xdistance > 400 | xdistance < -400) && (nextisfirst != 1) && !samesequence))
-                    {
-                        iter = 0;
-                        CreateFeature(newlayer, layername, clustergeom);
-                        clustergeom = null;
-                        clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
-                    }
-                }
-                if (!clustergeom.IsEmpty() && iter > 0)
-                {
-                    CreateFeature(newlayer, layername, clustergeom);
                 }
             }
             shapefileds.Dispose();
