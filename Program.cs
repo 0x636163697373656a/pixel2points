@@ -45,8 +45,7 @@ namespace pixels2points
                 Console.WriteLine(argshelp);
                 return;
             }
-            //if (!(args[0] == "-i" || args[0] == "-o"))
-            if (!(args.Contains<String>("-i") || args.Contains<String>("-o")))
+            if (!(args.Contains<String>("-i") && args.Contains<String>("-o")))
             {
                 Console.WriteLine(argshelp);
                 return;
