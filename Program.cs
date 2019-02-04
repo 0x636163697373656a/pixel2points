@@ -3,12 +3,10 @@ using System.Security;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
-using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
 using System.IO;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Diagnostics;
 using OSGeo.GDAL;
 using OSGeo.OGR;
@@ -36,7 +34,7 @@ namespace pixels2points
             GetSpatialReference getspatialref = new GetSpatialReference();
             GenerateMaskList maskinput = new GenerateMaskList();
 
-            argshelp = String.Concat(argshelp, "Mandatory Arguments (must come first):\r\n");
+            argshelp = String.Concat(argshelp, "Mandatory Arguments:\r\n");
             argshelp = String.Concat(argshelp, "-i\t\t\tinput directory (must be a valid, existing directory)\r\n");
             argshelp = String.Concat(argshelp, "-o\t\t\toutput file (.shp format)\r\n");
             argshelp = String.Concat(argshelp, "Optional Arguments:\r\n");
@@ -47,7 +45,8 @@ namespace pixels2points
                 Console.WriteLine(argshelp);
                 return;
             }
-            if (!(args[0] == "-i" || args[0] == "-o"))
+            //if (!(args[0] == "-i" || args[0] == "-o"))
+            if (!(args.Contains<String>("-i") || args.Contains<String>("-o")))
             {
                 Console.WriteLine(argshelp);
                 return;
@@ -63,14 +62,23 @@ namespace pixels2points
                         outputfile = args[++x];
                         break;
                     case "-m":
-                        maskshpfile = args[++x];
+                        maskshpfile = args.Length == (x+1) ? "" : args[++x];
                         break;
                 }
             }
             if (!String.IsNullOrEmpty(inputdirectory))
             {
                 // get the file attributes for file or directory
-                FileAttributes attr = File.GetAttributes(inputdirectory);
+                FileAttributes attr = new FileAttributes();
+                try
+                {
+                    attr = File.GetAttributes(inputdirectory);
+                }
+                catch(FileNotFoundException)
+                {
+                    Console.WriteLine("    [-] Directory does not exist");
+                    return;
+                }
                 if ((attr & FileAttributes.Directory) != FileAttributes.Directory)
                 {
                     Console.WriteLine("    [-] Argument must be a directory");
@@ -149,7 +157,7 @@ namespace pixels2points
             string csvdirectory = fileops.CreateCSVDirectory(outputdir);
             if (String.IsNullOrEmpty(csvdirectory))
             {
-                Console.WriteLine("    [-] Do not have permission to create output files. Exiting.");
+                Console.WriteLine("    [-] Could not create output files. Exiting.");
                 return;
             }
             row = Console.CursorTop - 1;
@@ -272,16 +280,16 @@ namespace pixels2points
             }
             catch (SecurityException ex)
             {
-                Console.WriteLine("    [-]Security Error. Please contact your system administrator for more information.");
-                Console.WriteLine("    [-]Error message: {0}", ex.Message);
+                Console.WriteLine("    [-] Security Error. Please contact your system administrator for more information.");
+                Console.WriteLine("    [-] Error message: {0}", ex.Message);
             }
             catch (ArgumentException)
             {
-                Console.WriteLine("    [-]Path contains invalid characters. Please specify a valid path.");
+                Console.WriteLine("    [-] Path is incomplete or contains invalid characters. Please specify a valid path.");
             }
             catch (PathTooLongException)
             {
-                Console.WriteLine("    [-]Path exceeds maximum length. Please specify a valid path.");
+                Console.WriteLine("    [-] Path exceeds maximum length. Please specify a valid path.");
             }
             return inputdirinfo;
         }
@@ -292,6 +300,7 @@ namespace pixels2points
             if (inputdirinfo == null)
             {
                 Console.WriteLine("    [-] Invalid directory provided. Nothing left to do");
+                return "";
             }
             using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
             {
@@ -664,10 +673,8 @@ namespace pixels2points
                             }
                             if (existingsequence == false) //another optimization
                             {
-                                //ResultCoords.results.Add(firstline);
                                 PreviousRowXY.Add(firstline);
                                 OutputCSV.Add(firstline);
-                                //sequencenumber += 1;
                                 runningsequence += 1;
                                 if (firstinrow == 0)
                                 {
@@ -680,7 +687,6 @@ namespace pixels2points
                             }
                             sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, lastx, lasty);
                             string lastline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", lastx, lasty, lastrow, lastcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
-                            //ResultCoords.results.Add(lastline);
                             OutputCSV.Add(lastline);
                             PreviousRowXY.Add(lastline);
                             resultsindex += 1;
@@ -718,6 +724,7 @@ namespace pixels2points
             HandleFileInput fileinput = new HandleFileInput(); 
             //more LINQ weirdness
             //group list elements into new lists by third comma-separated element in sublist, which represents the tile name
+            //shouldn't be needed anymore now that csv's are output per-tile, will probably remove
             var groupedlist = from l in HandleFileInput.ReadFromCSV(filepath).Skip(1)
                               let x = l.Split(',')
                               group l by x[6] into g
@@ -732,7 +739,7 @@ namespace pixels2points
             newfeature.SetField("TileName", layername);
             newfeature.SetField("ClusterID", currentsequence);
             Geometry hullgeom = newgeom.ConvexHull();
-            // ConvexHull() can return multiple types (ughh), left up to caller to handle this
+            //ConvexHull() can return multiple types (ughh), left up to caller to handle this
             //easiest way to "convert" a linestring to polygon
             //Buffer(double distance, int quadsecs) where distance is represented in same
             //units as coordinate system (ie meters) and quadsecs = number of segments in
@@ -802,8 +809,8 @@ namespace pixels2points
                 IEnumerable<List<string>> coordsbytile = ReturnClusterCoords(csvfile);
                 foreach (var tile in coordsbytile)
                 {
+                    //Sort list by sequence id
                     tile.Sort((x, y) => (Convert.ToInt32(x.Split(',')[4]).CompareTo(Convert.ToInt32(y.Split(',')[4]))));
-                    //List<string> cluster = clusterlist.OrderBy(x => Convert.ToInt32(x.Split(',')[2])).ToList();
                     //create new point geometry for every element in each list
                     Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                     clustergeom.AssignSpatialReference(spatialref);
@@ -833,11 +840,9 @@ namespace pixels2points
                         int ydistance = nextrw - currw;
                         int xdistance = nextcol - currcol;
                         bool samesequence = (currentsequence == nextsequence) ? true : false;
-                        //Console.WriteLine("{0}, {1}, {2}, {3}, {4}", currw, nextrw, currcol, nextcol, onsamerow);
                         Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                         newpoint.SetPoint(0, x, y, 0);
                         clustergeom.AddGeometry(newpoint);
-                        //CreateFeature(newlayer, layername, clustergeom);
                         ++iter;
                         if (!samesequence && (ydistance > 100 | (xdistance > 100 | xdistance < -100)))
                         {
