@@ -55,10 +55,10 @@ namespace pixels2points
                 switch (args[x].Trim())
                 {
                     case "-i":
-                        inputdirectory = args[++x];
+                        inputdirectory = args.Length == (x + 1) ? "" : args[++x];
                         break;
                     case "-o":
-                        outputfile = args[++x];
+                        outputfile = args.Length == (x + 1) ? "" : args[++x];
                         break;
                     case "-m":
                         maskshpfile = args.Length == (x+1) ? "" : args[++x];
@@ -84,6 +84,11 @@ namespace pixels2points
                     return;
                 }
             }
+            else
+            {
+                Console.WriteLine(argshelp);
+                return;
+            }
             if (!String.IsNullOrEmpty(outputfile))
             {
                 if (!(Path.GetExtension(outputfile) == ".shp"))
@@ -96,6 +101,11 @@ namespace pixels2points
                     Console.WriteLine("    [-] {0} already exists.", outputfile);
                     return;
                 }
+            }
+            else
+            {
+                Console.WriteLine(argshelp);
+                return;
             }
             if (!String.IsNullOrEmpty(maskshpfile))
             {
@@ -432,7 +442,7 @@ namespace pixels2points
     {
         public static List<string> csvfiles = new List<string>();
     }
-
+    
     public class GetSpatialReference
     {
         public string GetSpatialReferenceFromPath(string filepath)
@@ -471,7 +481,7 @@ namespace pixels2points
                 double prevy = Convert.ToDouble(point.Split(',')[1]);
                 int prevsequence = Convert.ToInt32(point.Split(',')[4]);
                 //((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)) < d*d
-                if (((currx - prevx) * (currx - prevx) + (curry - prevy) * (curry - prevy)) < 800 * 800)
+                if (((currx - prevx) * (currx - prevx) + (curry - prevy) * (curry - prevy)) < 500 * 500)
                 {
                     sequencenumber = prevsequence;
                     return sequencenumber;
@@ -541,7 +551,7 @@ namespace pixels2points
             double x, y;    //Current lon and lat
             string filename = Path.GetFileNameWithoutExtension(filepath);
             int adjacencycount = 0;
-            int adjacencythreshold = 15;
+            int adjacencythreshold = 25;
             bool previousrow = false;
             bool isinvalid = false;
             int pointsoverflow = 0;
@@ -639,6 +649,10 @@ namespace pixels2points
                         {
                             if (existingsequence == true) //save array space by only preserving first/last points in a contiguous sequence
                             {
+                                if (PreviousRowXY.Any())
+                                {
+                                    PreviousRowXY.RemoveAt(PreviousRowXY.Count - 1);
+                                }
                                 //wish C# had something like pop_back()...
                                 OutputCSV.RemoveAt(OutputCSV.Count - 1);
                             }
@@ -652,8 +666,6 @@ namespace pixels2points
                             double lasty = lastresult[1];
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
-                            sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, firstx, firsty);
-                            string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
                             //just in case, don't want to hit OOM
                             if (OutputCSV.Count > 600000)
                             {
@@ -672,6 +684,8 @@ namespace pixels2points
                             }
                             if (existingsequence == false) //another optimization
                             {
+                                sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, firstx, firsty);
+                                string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
                                 PreviousRowXY.Add(firstline);
                                 OutputCSV.Add(firstline);
                                 runningsequence += 1;
@@ -689,8 +703,8 @@ namespace pixels2points
                             OutputCSV.Add(lastline);
                             PreviousRowXY.Add(lastline);
                             resultsindex += 1;
+                            runningsequence += 1;
                         }
-
                         pixlists.Clear();
                         adjacencycount = 0;
                         existingsequence = true;
@@ -709,9 +723,12 @@ namespace pixels2points
                 }
                 PreviousRowXY.RemoveRange(0, (PreviousRowXY.Count - resultsindex));
             }
-            string outputfile = outputdir + "\\" + filename + ".csv";
-            WritePointData(outputfile, OutputCSV);
-            ResultCoords.csvfiles.Add(outputfile);
+            if (OutputCSV.Any())
+            {
+                string outputfile = outputdir + "\\" + filename + ".csv";
+                WritePointData(outputfile, OutputCSV);
+                ResultCoords.csvfiles.Add(outputfile);
+            }
             ds.Dispose();
         }
     }
