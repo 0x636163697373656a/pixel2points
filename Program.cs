@@ -647,15 +647,6 @@ namespace pixels2points
                         hasblackpx = true;
                         if (previousrow == true) //cuts down the # of false positives while preserving "actual" voids
                         {
-                            if (existingsequence == true) //save array space by only preserving first/last points in a contiguous sequence
-                            {
-                                if (PreviousRowXY.Any())
-                                {
-                                    PreviousRowXY.RemoveAt(PreviousRowXY.Count - 1);
-                                }
-                                //wish C# had something like pop_back()...
-                                OutputCSV.RemoveAt(OutputCSV.Count - 1);
-                            }
                             List<double> firstresult = pixlists.First();
                             List<double> lastresult = pixlists.Last();
                             double firstx = firstresult[0];
@@ -666,8 +657,19 @@ namespace pixels2points
                             double lasty = lastresult[1];
                             double lastrow = lastresult[2];
                             double lastcolumn = lastresult[3];
+                            if (existingsequence == true) //save array space by only preserving first/last points in a contiguous sequence
+                            {
+                                //wish C# had something like pop_back()...
+                                OutputCSV.RemoveAt(OutputCSV.Count - 1);
+                            }
+                            //if it has more probably a shoreline tile; calculating distance a lot of times can be too costly
+                            while (PreviousRowXY.Count > 10000)
+                            {
+                                PreviousRowXY.RemoveAt(PreviousRowXY.Count - 2);
+                                resultsindex -= 1;
+                            }
                             //just in case, don't want to hit OOM
-                            if (OutputCSV.Count > 600000)
+                            if (OutputCSV.Count > 500000)
                             {
                                 Console.WriteLine("[-] Found a lot of valid BlackPx. Please consider using -m to mask out shoreline tiles");
                                 string overflowfile = outputdir + "\\" + filename + "_" + pointsoverflow.ToString() + ".csv";
@@ -684,11 +686,11 @@ namespace pixels2points
                             }
                             if (existingsequence == false) //another optimization
                             {
+                                runningsequence += 1;
                                 sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, firstx, firsty);
                                 string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
                                 PreviousRowXY.Add(firstline);
                                 OutputCSV.Add(firstline);
-                                runningsequence += 1;
                                 if (firstinrow == 0)
                                 {
                                     resultsindex += 1;
@@ -703,7 +705,6 @@ namespace pixels2points
                             OutputCSV.Add(lastline);
                             PreviousRowXY.Add(lastline);
                             resultsindex += 1;
-                            runningsequence += 1;
                         }
                         pixlists.Clear();
                         adjacencycount = 0;
@@ -860,7 +861,7 @@ namespace pixels2points
                         newpoint.SetPoint(0, x, y, 0);
                         clustergeom.AddGeometry(newpoint);
                         ++iter;
-                        if (!samesequence && (ydistance > 100 | (xdistance > 100 | xdistance < -100)))
+                        if (!samesequence && (ydistance > 300 | (xdistance > 300 | xdistance < -300)))
                         {
                             iter = 0;
                             CreateFeature(newlayer, layername, clustergeom, currentsequence);
