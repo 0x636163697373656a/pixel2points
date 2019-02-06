@@ -8,6 +8,7 @@ using System.Text;
 using System.IO;
 using System.Threading;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using OSGeo.GDAL;
 using OSGeo.OGR;
 using OSGeo.OSR;
@@ -207,6 +208,12 @@ namespace pixels2points
             Console.WriteLine("    [+] Got projection reference.");
             Console.WriteLine(">Creating shapefile...");
             convexhull.CreateShapeFile(spatialref, outputfile);
+            Console.WriteLine("    [+] Done!");
+
+            Console.WriteLine(">Dissolving features...");
+            string outshp = Path.ChangeExtension(outputfile, null) + "_dissolved.shp";
+            convexhull.DissolveFeatures(outputfile, outshp, spatialref);
+            Console.WriteLine("    [+] Done!");
 
             Console.WriteLine(">Cleaning Up...");
             try
@@ -536,8 +543,6 @@ namespace pixels2points
                 Environment.Exit(1);
             }
             List<string> OutputCSV = new List<string>();
-            List<string> PreviousRowXY = new List<string>();
-            int runningsequence = 0;
             double[] gt = new double[6];
             ds.GetGeoTransform(gt); //Read geo transform info into array
             int Rows = ds.RasterYSize;
@@ -587,7 +592,6 @@ namespace pixels2points
                 bool existingsequence = false;
                 int firstinrow = 1;
                 int sequencenumber = 0;
-                int resultsindex = 0;
                 //iterate each item in one line
                 for (int r = 0; r < Cols; r++)
                 {
@@ -662,12 +666,6 @@ namespace pixels2points
                                 //wish C# had something like pop_back()...
                                 OutputCSV.RemoveAt(OutputCSV.Count - 1);
                             }
-                            //if it has more probably a shoreline tile; calculating distance a lot of times can be too costly
-                            while (PreviousRowXY.Count > 10000)
-                            {
-                                PreviousRowXY.RemoveAt(PreviousRowXY.Count - 2);
-                                resultsindex -= 1;
-                            }
                             //just in case, don't want to hit OOM
                             if (OutputCSV.Count > 500000)
                             {
@@ -678,7 +676,8 @@ namespace pixels2points
                                 pointsoverflow += 1;
                                 OutputCSV.Clear();
                             }
-                            if (runningsequence == Int32.MaxValue)
+                            //edge case
+                            if (sequencenumber == Int32.MaxValue)
                             {
                                 Console.WriteLine("[-] Found too many unique patterns. Please consider using -m to mask out shoreline tiles");
                                 Console.WriteLine("    Reducing results size, may skew results");
@@ -686,25 +685,16 @@ namespace pixels2points
                             }
                             if (existingsequence == false) //another optimization
                             {
-                                runningsequence += 1;
-                                sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, firstx, firsty);
+                                sequencenumber += 1;
                                 string firstline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", firstx, firsty, firstrow, firstcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
-                                PreviousRowXY.Add(firstline);
                                 OutputCSV.Add(firstline);
-                                if (firstinrow == 0)
-                                {
-                                    resultsindex += 1;
-                                }
                             }
                             if (existingsequence == false && firstinrow == 1)
                             {
                                 firstinrow = 0;
                             }
-                            sequencenumber = CheckExistingNodesDistance(PreviousRowXY, runningsequence, lastx, lasty);
                             string lastline = string.Format("{0},{1},{2},{3},{4},{5},{6}{7}", lastx, lasty, lastrow, lastcolumn, sequencenumber, firstinrow, filename, Environment.NewLine);
                             OutputCSV.Add(lastline);
-                            PreviousRowXY.Add(lastline);
-                            resultsindex += 1;
                         }
                         pixlists.Clear();
                         adjacencycount = 0;
@@ -722,7 +712,6 @@ namespace pixels2points
                 {
                     previousrow = false;
                 }
-                PreviousRowXY.RemoveRange(0, (PreviousRowXY.Count - resultsindex));
             }
             if (OutputCSV.Any())
             {
@@ -749,19 +738,18 @@ namespace pixels2points
             return groupedlist;
         }
 
-        private void CreateFeature(Layer featurelayer, string layername, Geometry newgeom, int currentsequence)
+        private void CreateHullFeature(Layer featurelayer, string layername, Geometry newgeom, int currentsequence)
         {
             //set "TileName" to last comma-separated element in sublist (the tile name...)
             Feature newfeature = new Feature(featurelayer.GetLayerDefn());
             newfeature.SetField("TileName", layername);
-            newfeature.SetField("ClusterID", currentsequence);
             Geometry hullgeom = newgeom.ConvexHull();
             //ConvexHull() can return multiple types (ughh), left up to caller to handle this
             //easiest way to "convert" a linestring to polygon
             //Buffer(double distance, int quadsecs) where distance is represented in same
             //units as coordinate system (ie meters) and quadsecs = number of segments in
             //a 90 degree angle
-            Geometry polygeom = hullgeom.Buffer(1.0, 30);
+            Geometry polygeom = hullgeom.Buffer(35.0, 30);
             newfeature.SetGeometry(polygeom);
             if (featurelayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
             {
@@ -772,6 +760,85 @@ namespace pixels2points
             }
             newfeature.Dispose();
             newgeom.Dispose();
+        }
+
+        public void DissolveFeatures(string shapefilepath, string outputshp, string projref)
+        {
+            SpatialReference outspatialref = new SpatialReference(projref);
+            string drivertype = "ESRI Shapefile";
+            OSGeo.OGR.Driver shpdriver = Ogr.GetDriverByName(drivertype);
+            if (shpdriver == null)
+            {
+                Console.WriteLine("    [-] Couldn't get shapefile driver.");
+                return;
+            }
+            DataSource outshpds = shpdriver.CreateDataSource(outputshp, new string[] { });
+            Layer outlayer = outshpds.CreateLayer(Path.ChangeExtension(outputshp, null), outspatialref, wkbGeometryType.wkbPolygon, new string[] { });
+            if (outlayer == null)
+            {
+                Console.WriteLine("    [-] Layer creation failed.");
+                outshpds.Dispose();
+                outlayer.Dispose();
+                return;
+            }
+            DataSource shapefileds = shpdriver.Open(shapefilepath, 1);
+            if (shapefileds == null)
+            {
+                Console.WriteLine("    [-] Couldn't create shapefile datasource.");
+                return;
+            }
+            Layer featureslayer = shapefileds.GetLayerByIndex(0);
+            if (featureslayer == null)
+            {
+                Console.WriteLine("    [-] Could not retrieve shapefile layer");
+                shapefileds.Dispose();
+                featureslayer.Dispose();
+            }
+            //unioncascaded() takes a multipolygon, so merge all the features to one multipolygon
+            Geometry multipoly = new Geometry(wkbGeometryType.wkbMultiPolygon);
+            for (int i = 0; i < featureslayer.GetFeatureCount(1); i++)
+            {
+                Feature currentfeature = featureslayer.GetFeature(i);
+                Geometry featuregeometry = currentfeature.GetGeometryRef();
+                if (!featuregeometry.IsEmpty())
+                {
+                    SpatialReference spatialref = featuregeometry.GetSpatialReference();
+                    featuregeometry.CloseRings();
+                    string wktgeom = "";
+                    featuregeometry.ExportToWkt(out wktgeom);
+                    multipoly.AddGeometryDirectly(Ogr.CreateGeometryFromWkt(ref wktgeom, spatialref));
+                }
+            }
+            Geometry union = multipoly.UnionCascaded();
+            //create polygons for each geometry in the multipoly
+            for (int i = 0; i < union.GetGeometryCount(); i++)
+            {
+                Geometry geometryref = union.GetGeometryRef(i);
+                SpatialReference spatialref = geometryref.GetSpatialReference();
+                int wkbsize = geometryref.WkbSize();
+                var wkbuf = new byte[wkbsize];
+                geometryref.ExportToWkb(wkbuf);
+                //interop nonsense
+                GCHandle pinned = GCHandle.Alloc(wkbuf, GCHandleType.Pinned);
+                IntPtr address = pinned.AddrOfPinnedObject();
+                Geometry polygeom = Ogr.CreateGeometryFromWkb(wkbsize, address, spatialref);
+                //don't forget!
+                pinned.Free();
+                Feature newfeature = new Feature(outlayer.GetLayerDefn());
+                newfeature.SetGeometry(polygeom);
+                if (outlayer.CreateFeature(newfeature) != Ogr.OGRERR_NONE)
+                {
+                    Console.WriteLine("    [-] Failed to create feature in shapefile.");
+                    newfeature.Dispose();
+                    polygeom.Dispose();
+                    return;
+                }
+                newfeature.Dispose();
+                polygeom.Dispose();
+            }
+            outlayer.Dispose();
+            outshpds.Dispose();
+            shapefileds.Dispose();
         }
 
         public void CreateShapeFile(string projref, string shapefilepath)
@@ -814,20 +881,11 @@ namespace pixels2points
                 newfield.Dispose();
                 return;
             }
-            if (newlayer.CreateField(clusterid, 1) != Ogr.OGRERR_NONE)
-            {
-                Console.WriteLine("    [-] Creating ClusterID field failed.");
-                shapefileds.Dispose();
-                newfield.Dispose();
-                return;
-            }
             foreach (string csvfile in ResultCoords.csvfiles)
             {
                 IEnumerable<List<string>> coordsbytile = ReturnClusterCoords(csvfile);
                 foreach (var tile in coordsbytile)
                 {
-                    //Sort list by sequence id
-                    tile.Sort((x, y) => (Convert.ToInt32(x.Split(',')[4]).CompareTo(Convert.ToInt32(y.Split(',')[4]))));
                     //create new point geometry for every element in each list
                     Geometry clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                     clustergeom.AssignSpatialReference(spatialref);
@@ -857,21 +915,22 @@ namespace pixels2points
                         int ydistance = nextrw - currw;
                         int xdistance = nextcol - currcol;
                         bool samesequence = (currentsequence == nextsequence) ? true : false;
+                        bool onsamerow = (nextrw - currw == 0) ? true : false;
                         Geometry newpoint = new Geometry(wkbGeometryType.wkbPoint);
                         newpoint.SetPoint(0, x, y, 0);
                         clustergeom.AddGeometry(newpoint);
                         ++iter;
-                        if (!samesequence && (ydistance > 300 | (xdistance > 300 | xdistance < -300)))
+                        if ((ydistance > 300 || (xdistance > 300 || xdistance < -300) && ((!samesequence && onsamerow) || ydistance > 1)))
                         {
                             iter = 0;
-                            CreateFeature(newlayer, layername, clustergeom, currentsequence);
+                            CreateHullFeature(newlayer, layername, clustergeom, currentsequence);
                             clustergeom = null;
                             clustergeom = new Geometry(wkbGeometryType.wkbMultiPoint);
                         }
                     }
                     if (!clustergeom.IsEmpty() && iter > 0)
                     {
-                        CreateFeature(newlayer, layername, clustergeom, currentsequence);
+                        CreateHullFeature(newlayer, layername, clustergeom, currentsequence);
                     }
                 }
             }
