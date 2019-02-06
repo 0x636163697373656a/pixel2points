@@ -796,11 +796,12 @@ namespace pixels2points
             }
             //unioncascaded() takes a multipolygon, so merge all the features to one multipolygon
             Geometry multipoly = new Geometry(wkbGeometryType.wkbMultiPolygon);
-            for (int i = 0; i < featureslayer.GetFeatureCount(1); i++)
+            for (int i = 0; i < featureslayer.GetFeatureCount(0); i++)
             {
                 Feature currentfeature = featureslayer.GetFeature(i);
                 Geometry featuregeometry = currentfeature.GetGeometryRef();
-                if (!featuregeometry.IsEmpty())
+                //shouldn't have to worry about isvalid since they were buffered, but just in case
+                if (!featuregeometry.IsEmpty() && featuregeometry.IsValid())
                 {
                     SpatialReference spatialref = featuregeometry.GetSpatialReference();
                     featuregeometry.CloseRings();
@@ -815,12 +816,18 @@ namespace pixels2points
             {
                 Geometry geometryref = union.GetGeometryRef(i);
                 SpatialReference spatialref = geometryref.GetSpatialReference();
+                //need to deserialize each geometry to binary then reserialize to shp format polygon
                 int wkbsize = geometryref.WkbSize();
+                //sometimes unioncascaded() will return an empty geometry. maybe some kind of bug
+                if (wkbsize == 0)
+                {
+                    continue;
+                }
                 var wkbuf = new byte[wkbsize];
-                geometryref.ExportToWkb(wkbuf);
                 //interop nonsense
                 GCHandle pinned = GCHandle.Alloc(wkbuf, GCHandleType.Pinned);
                 IntPtr address = pinned.AddrOfPinnedObject();
+                geometryref.ExportToWkb(wkbsize, address, wkbByteOrder.wkbXDR);
                 Geometry polygeom = Ogr.CreateGeometryFromWkb(wkbsize, address, spatialref);
                 //don't forget!
                 pinned.Free();
@@ -863,7 +870,6 @@ namespace pixels2points
             }
             //new field to add the tile name to
             FieldDefn newfield = new FieldDefn("TileName", FieldType.OFTString);
-            FieldDefn clusterid = new FieldDefn("ClusterID", FieldType.OFTInteger);
             string fname = Path.GetFileName(shapefilepath);
             //create new layer to add features to
             Layer newlayer = shapefileds.CreateLayer(Path.ChangeExtension(fname, null), spatialref, wkbGeometryType.wkbPolygon, new string[] { });
@@ -920,7 +926,8 @@ namespace pixels2points
                         newpoint.SetPoint(0, x, y, 0);
                         clustergeom.AddGeometry(newpoint);
                         ++iter;
-                        if ((ydistance > 300 || (xdistance > 300 || xdistance < -300) && ((!samesequence && onsamerow) || ydistance > 1)))
+                        // this will create some "lines" if there are a lot of shadows in adjacent rows, but they will get buffered out
+                        if ((ydistance > 300 || (xdistance > 300 || xdistance < -300)) && ((!samesequence && onsamerow) || ydistance > 2))
                         {
                             iter = 0;
                             CreateHullFeature(newlayer, layername, clustergeom, currentsequence);
